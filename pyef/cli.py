@@ -394,11 +394,7 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
 
         # Run geometry check if requested
         if geom_flag:
-            # Method will calculate various RMSD, molsimplify error parameters/flags
-            # NOTE: errorAnalysis() method does not exist in Electrostatics class
-            # TODO: Implement errorAnalysis() or remove this functionality
-            # dataObject.errorAnalysis('Errordata')
-            pass
+            print("Warning: geometry checks are not implemented yet; skipping.")
 
         # Run the appropriate analysis
         if analysis_type == 'esp':

@@ -62,19 +62,19 @@ class Electrostatics:
 
     Attributes
     ----------
-    lst_of_folders : list of str
-        Names of folders containing computation outputs.
+    molden_paths : list of str
+        Paths to .molden files, one per job (absolute or relative).
+    xyz_paths : list of str
+        Paths to .xyz files, one per job (absolute or relative).
     lst_of_tmcm_idx : list of int
-        Atom indices where ESP will be computed (typically metal centers).
-    folder_to_file_path : str
-        Path from folder location to .molden file.
+        Atom indices for ESP evaluation (typically metal centers).
     config : dict
         Configuration dictionary containing:
             - hasECP (bool): Whether ECP was used in calculation
             - includePtChgs (bool): Include point charges in ESP calculation
             - ptChgfp (str): Path to point charge file
-            - molden_filename (str): Name of molden file
-            - xyzfilename (str): Name of xyz coordinate file
+            - molden_filename (str): Name of molden file (compatibility)
+            - xyzfilename (str): Name of xyz coordinate file (compatibility)
             - rerun (bool): Force recalculation of charges
             - maxIHirshBasis (int): Max basis functions for Hirshfeld-I
             - maxIHirshFuzzyBasis (int): Max basis for fuzzy Hirshfeld-I
@@ -100,16 +100,12 @@ class Electrostatics:
 
     Examples
     --------
-    >>> # Recommended: Use complete folder paths
-    >>> folders = ['calc1/scr', 'calc2/scr']
-    >>> es = Electrostatics(folders, dielectric=2.0)
-    >>>
-    >>> # Legacy: Use separate folder names and subdirectory
-    >>> folders = ['calc1', 'calc2']
-    >>> es = Electrostatics(folders, '/scr/', dielectric=2.0)
+    >>> molden_paths = ['calc1/scr/optim.molden', 'calc2/scr/optim.molden']
+    >>> xyz_paths = ['calc1/scr/optim.xyz', 'calc2/scr/optim.xyz']
+    >>> es = Electrostatics(molden_paths, xyz_paths, dielectric=2.0)
     >>>
     >>> # For ESP calculations (metal indices required)
-    >>> es_with_metals = Electrostatics(folders, lst_of_tmcm_idx=[0, 0], dielectric=2.0)
+    >>> es_with_metals = Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx=[0, 0], dielectric=2.0)
     >>> data = es_with_metals.getESP(['Hirshfeld', 'Hirshfeld_I'], 'esp_results', ...)
     """
 
@@ -120,20 +116,20 @@ class Electrostatics:
         Parameters
         ----------
         molden_paths : list of str
-            List of absolute paths to .molden files for each job.
+            List of .molden file paths for each job (absolute or relative).
             Example: ['/path/to/job1/optim.molden', '/path/to/job2/optim.molden']
         xyz_paths : list of str
-            List of absolute paths to .xyz files for each job.
+            List of .xyz file paths for each job (absolute or relative).
             Example: ['/path/to/job1/optim.xyz', '/path/to/job2/optim.xyz']
         lst_of_tmcm_idx : list of int, optional
             List of atom indices for ESP calculation (0-indexed).
             Only required when running ESP analysis. Not needed for E-field
             or electrostatic stabilization if bond indices are provided.
         ptchg_paths : list of str or None, optional
-            List of absolute paths to point charge files, one per job.
+            List of point charge file paths, one per job (absolute or relative).
             Use None for jobs without point charges.
             Example: ['/path/to/job1/ptchg.txt', None, '/path/to/job3/ptchg.txt']
-            If not provided, can use legacy includePtChgs() method or ptChgfp kwarg.
+            If not provided, can use includePtChgs() or ptChgfp config for compatibility.
         **kwargs : dict, optional
             Configuration options to override defaults. See class docstring
             for available configuration keys.
@@ -218,18 +214,18 @@ For more examples, see:
                     pass  # If conversion fails, fall through to error handling
 
             if not isinstance(lst_of_tmcm_idx, list):
-                # ENHANCED: Detect old API usage pattern
-                # Old API: Electrostatics(folders, atoms, folder_to_file_path, molden_filename, xyzfilename)
-                # New API: Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx)
+                # ENHANCED: Detect previous API usage pattern
+                # Previous API: Electrostatics(folders, atoms, folder_to_file_path, molden_filename, xyzfilename)
+                # Current API: Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx)
 
                 if isinstance(lst_of_tmcm_idx, str):
-                    # Likely old API: third argument was folder_to_file_path (string)
+                    # Likely previous API: third argument was folder_to_file_path (string)
                     hint_msg = """
 
-HINT: It looks like you may be using the OLD API format.
+HINT: It looks like you may be using the previous API format.
 The API has been updated. Here's how to migrate your code:
 
-OLD API (deprecated):
+PREVIOUS API:
   estat = Electrostatics(
       list_of_folders,           # List of folder paths
       list_of_atoms,             # List of atom indices
@@ -238,7 +234,7 @@ OLD API (deprecated):
       xyzfilename='optim.xyz'
   )
 
-NEW API (current):
+CURRENT API:
   estat = Electrostatics(
       molden_paths,              # List of COMPLETE paths to .molden files
       xyz_paths,                 # List of COMPLETE paths to .xyz files
@@ -298,8 +294,8 @@ For more examples, see:
             'hasECP': False,              # Use Effective Core Potentials
             'includePtChgs': False,       # Include QMMM point charges
             'ptChgfp': '',                # Point charge file path
-            'molden_filename': 'final_optim.molden',  # Molden file name (legacy, kept for compatibility)
-            'xyzfilename': 'final_optim.xyz',         # XYZ file name (legacy, kept for compatibility)
+            'molden_filename': 'final_optim.molden',  # Molden file name (compatibility)
+            'xyzfilename': 'final_optim.xyz',         # XYZ file name (compatibility)
             'rerun': False,               # Force recalculation
             'maxIHirshBasis': 12000,      # Hirshfeld-I basis limit
             'maxIHirshFuzzyBasis': 6000,  # Fuzzy Hirshfeld-I basis limit
@@ -416,7 +412,7 @@ Correct usage:
 
         elif 'ptChgfp' in kwargs and kwargs['ptChgfp']:
             # Old API via kwargs: single filename for all jobs
-            self.ptchg_paths = None  # Signal to use old mode
+            self.ptchg_paths = None  # Signal to use filename mode
             # ptChgfp already set in config update above
         else:
             # No point charges specified
@@ -647,40 +643,38 @@ Input commands that were to be sent:
     def includePtChgs(self, name_ptch_file):
         """Include point charges in ESP calculation (for QMMM).
 
-        This is the LEGACY API. New code should use ptchg_paths parameter in __init__.
-
         Parameters
         ----------
         name_ptch_file : str or list
-            LEGACY: Filename of point charge file (e.g., 'pointcharges.txt').
-                    The file will be looked for in the same directory as each job's molden file.
-            NEW: List of complete paths to point charge files, one per job.
-                 Use None for jobs without point charges.
+            If str, uses a single filename (e.g., 'pointcharges.txt') that is
+            searched for in each job directory.
+            If list, uses per-job file paths, one per job; use None for jobs
+            without point charges.
 
         Notes
         -----
         Sets includePtChgs config to True and stores filename/paths.
         Point charges are typically from MM region in QM/MM calculations.
 
-        For legacy mode (string), the file is automatically located in each job's working directory.
-        For new mode (list), paths should be absolute or relative to current directory.
+        For filename mode (string), the file is automatically located in each job's working directory.
+        For list mode, paths may be absolute or relative to the current working directory.
 
         Examples
         --------
-        # Legacy usage (filename only)
+        # Single filename (applies per job directory)
         estat.includePtChgs('pointcharges.txt')
 
-        # New usage (list of paths)
+        # Per-job paths
         estat.includePtChgs(['/path/job1/ptchg.txt', None, '/path/job3/ptchg.txt'])
         """
         if isinstance(name_ptch_file, str):
-            # Legacy mode: single filename for all jobs
+            # Filename mode: single filename for all jobs
             self.config['ptChgfp'] = name_ptch_file
             self.config['includePtChgs'] = True
-            self.ptchg_paths = None  # Signal to use old mode
+            self.ptchg_paths = None  # Signal to use filename mode
             print(f'Point charges to be included via {name_ptch_file}')
         elif isinstance(name_ptch_file, list):
-            # New mode: list of paths
+            # List mode: per-job paths
             if len(name_ptch_file) != len(self.molden_paths):
                 raise ValueError(f"""
 {'='*60}
@@ -711,15 +705,15 @@ Correct usage:
 
         Handles multiple modes with proper precedence:
         1. Function-level override (highest priority)
-        2. New API with ptchg_paths list
-        3. Legacy API with ptChgfp filename
+        2. Per-job ptchg_paths list
+        3. Filename-based ptChgfp setting
 
         Parameters
         ----------
         job_index : int
             Index of the current job (0-based)
         folder_path : str
-            Absolute path to job folder (for legacy mode)
+            Absolute path to job folder (for filename-based mode)
         override_path : str or None, optional
             Function-level override path (highest priority)
 
@@ -734,13 +728,13 @@ Correct usage:
                 return None
             return os.path.abspath(override_path)
 
-        # Priority 2: New API with ptchg_paths list
+        # Priority 2: Per-job ptchg_paths list
         if self.ptchg_paths is not None:
             if job_index >= len(self.ptchg_paths):
                 raise IndexError(f"Job index {job_index} out of range for ptchg_paths (length {len(self.ptchg_paths)})")
             return self.ptchg_paths[job_index]  # May be None
 
-        # Priority 3: Legacy API with ptChgfp filename
+        # Priority 3: Filename-based ptChgfp setting
         if self.config.get('ptChgfp', ''):
             ptchg_filename = self.config['ptChgfp']
             return os.path.join(folder_path, ptchg_filename)
@@ -1024,6 +1018,58 @@ Correct usage:
         chg_df['Atom'] = atoms
         return chg_df
 
+    def getPdbCharges(self, pdb_path):
+        """Load point charges from a PDB file using the B-factor column.
+
+        Parameters
+        ----------
+        pdb_path : str
+            Path to PDB file containing charges in the B-factor column.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns: ['Atom', 'charge', 'x', 'y', 'z']
+
+        Notes
+        -----
+        Reads ATOM/HETATM records and parses fixed-width PDB columns.
+        The B-factor column is interpreted as the partial charge (e).
+        """
+        rows = []
+        with open(pdb_path, "r") as handle:
+            for line_num, line in enumerate(handle, start=1):
+                record = line[0:6].strip()
+                if record not in ("ATOM", "HETATM"):
+                    continue
+                if len(line) < 66:
+                    raise ValueError(
+                        f"PDB line too short to parse coordinates/B-factor at line {line_num}: {line.rstrip()}"
+                    )
+                try:
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid PDB coordinate at line {line_num}: {line.rstrip()}"
+                    ) from exc
+                try:
+                    charge = float(line[60:66].strip())
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid PDB B-factor charge at line {line_num}: {line.rstrip()}"
+                    ) from exc
+                atom = line[76:78].strip()
+                if not atom:
+                    atom = line[12:16].strip()
+                rows.append({"Atom": atom, "x": x, "y": y, "z": z, "charge": charge})
+
+        if not rows:
+            raise ValueError(f"No ATOM/HETATM records found in PDB: {pdb_path}")
+
+        return pd.DataFrame(rows)
+
     @staticmethod
     def mapcount(filename):
         """Rapidly count lines in a file using memory mapping.
@@ -1265,6 +1311,63 @@ Correct usage:
 
         return [constants.VM_TO_VA*np.array(E_vec), position_vec, df['Atom'][idx_atom], constants.VM_TO_VA*np.array(atom_wise_additions)]
 
+    def pointcharge_atomicEfield(self, espatom_idx, charge_range, df_charges):
+        """
+        Calculate E-field using point charges from a DataFrame only.
+
+        Parameters
+        ----------
+        espatom_idx : int
+            Atom index (0-indexed) where the E-field is calculated.
+        charge_range : list or range
+            Atom indices to include in the E-field calculation.
+        df_charges : pd.DataFrame
+            DataFrame with columns: ['Atom', 'x', 'y', 'z', 'charge'].
+
+        Returns
+        -------
+        list
+            [E_vec, position_vec, atom_symbol, atom_wise_contributions]
+            E_vec is in V/Angstrom.
+        """
+        inv_eps = 1/(self.config['dielectric'])
+
+        charges = df_charges['charge']
+        xs = df_charges['x']
+        ys = df_charges['y']
+        zs = df_charges['z']
+
+        idx_atom = espatom_idx
+
+        xo = xs[idx_atom]
+        yo = ys[idx_atom]
+        zo = zs[idx_atom]
+        position_vec = constants.ANGSTROM_TO_M*np.array([xo, yo, zo])
+        Ex = 0
+        Ey = 0
+        Ez = 0
+        atom_wise_additions = []
+
+        for idx in range(0, len(xs)):
+            if idx == idx_atom:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+            if idx not in charge_range:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+
+            r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 + ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 + ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**(0.5)
+            Ex_contrib = -inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(charges[idx])*((xs[idx] - xo)*constants.ANGSTROM_TO_M)/(r**3)
+            Ey_contrib = -inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(charges[idx])*((ys[idx] - yo)*constants.ANGSTROM_TO_M)/(r**3)
+            Ez_contrib = -inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(charges[idx])*((zs[idx] - zo)*constants.ANGSTROM_TO_M)/(r**3)
+            Ex = Ex + Ex_contrib
+            Ey = Ey + Ey_contrib
+            Ez = Ez + Ez_contrib
+            atom_wise_additions.append([Ex_contrib, Ey_contrib, Ez_contrib])
+
+        E_vec = [Ex, Ey, Ez]
+        return [constants.VM_TO_VA*np.array(E_vec), position_vec, df_charges['Atom'][idx_atom], constants.VM_TO_VA*np.array(atom_wise_additions)]
+
     #Helper functions for resp-based adjustement of MD point charges
 
     def compute_esp(q_coords, q_vals, probe_coords):
@@ -1498,7 +1601,7 @@ Correct usage:
  
 
  # Bond_indices is a list of tuples where each tuple contains the zero-indexed values of location of the atoms of interest
-    def calc_bond_dipoles(self, bond_indices, xyz_filepath, atom_multipole_file, bool_multipole):
+    def calc_bond_dipoles(self, bond_indices, xyz_filepath, atom_multipole_file, bool_multipole, charge_df=None):
         """Calculate bond dipole moments for given bond indices.
 
         For each bond between atoms A and B, calculates the bond dipole moment vector
@@ -1517,6 +1620,9 @@ Correct usage:
             Path to multipole/charge file
         bool_multipole : bool
             If True, use multipole file; if False, use monopole charges
+        charge_df : pd.DataFrame or None
+            Optional DataFrame with monopole charges (columns: Atom, x, y, z, charge).
+            If provided, overrides charge file input.
 
         Returns
         -------
@@ -1533,7 +1639,9 @@ Correct usage:
         df_geom = Geometry(xyz_filepath).getGeomInfo()
 
         # Get charge information
-        if bool_multipole:
+        if charge_df is not None:
+            charge_dict = {idx: charge for idx, charge in enumerate(charge_df['charge'])}
+        elif bool_multipole:
             multipole_data = MultiwfnInterface.getmultipoles(atom_multipole_file)
             # Use enumerate for proper 0-indexed mapping, regardless of Index field value
             charge_dict = {idx: atom['Atom_Charge'] for idx, atom in enumerate(multipole_data)}
@@ -1636,6 +1744,54 @@ Correct usage:
 
         # For backwards compatibility, return the last bond's atomwise data as the 5th element
         # and return the full list as the 6th element
+        E_proj_atomwise = E_proj_atomwise_list[-1] if E_proj_atomwise_list else None
+        return [E_projected, bonded_atoms, bond_indices, bond_lens, E_proj_atomwise, E_proj_atomwise_list]
+
+    def bondEfield_pointcharges(self, bond_indices, df_charges, all_lines):
+        """
+        Compute bond-projected E-fields using point charges only.
+
+        Parameters
+        ----------
+        bond_indices : list of tuples
+            List of (atomA_idx, atomB_idx) tuples specifying bonds.
+        df_charges : pd.DataFrame
+            DataFrame with columns: ['Atom', 'x', 'y', 'z', 'charge'].
+        all_lines : list
+            Atom indices to include in the E-field calculation.
+
+        Returns
+        -------
+        list
+            [E_projected, bonded_atoms, bond_indices, bond_lens, E_proj_atomwise, E_proj_atomwise_list]
+        """
+        bonded_atoms = []
+        E_projected = []
+        bonded_positions = []
+        bond_lens = []
+        E_proj_atomwise_list = []
+
+        for atomidxA, atomidxB in bond_indices:
+            [A_bonded_E, A_bonded_position, A_bonded_atom, A_atom_wise_E] = self.pointcharge_atomicEfield(
+                atomidxA, all_lines, df_charges
+            )
+            [B_bonded_E, B_bonded_position, B_bonded_atom, B_atom_wise_E] = self.pointcharge_atomicEfield(
+                atomidxB, all_lines, df_charges
+            )
+
+            bond_vec_unnorm = np.subtract(np.array(A_bonded_position), np.array(B_bonded_position))
+            bond_len = np.linalg.norm(bond_vec_unnorm)
+            bond_vec = bond_vec_unnorm/(bond_len)
+
+            E_proj = (1/2)*np.dot((np.array(A_bonded_E) + np.array(B_bonded_E)), bond_vec)
+            E_projected.append(E_proj)
+            bonded_atoms.append((A_bonded_atom, B_bonded_atom))
+            bonded_positions.append((A_bonded_position, B_bonded_position))
+            bond_lens.append(bond_len)
+
+            E_proj_atomwise = (1/2)*((np.array(A_atom_wise_E) + np.array(B_atom_wise_E)) @ bond_vec.T)
+            E_proj_atomwise_list.append(E_proj_atomwise)
+
         E_proj_atomwise = E_proj_atomwise_list[-1] if E_proj_atomwise_list else None
         return [E_projected, bonded_atoms, bond_indices, bond_lens, E_proj_atomwise, E_proj_atomwise_list]
 
@@ -1854,10 +2010,7 @@ Correct usage:
         return [sorted_dist, sorted_esps, cumulative_esps, sorted_idx, sorted_partial_charges, sorted_atomTypes]
   
 
-        # list_of_folders = the list of the folders that contain the desired files
-        # new_dir: the [post-folder path to the scr folder that contains the .molden and optim.xyz file themselfs
-        # dict of calcs, calculations to be performed by multiwavefunction with the corresponding keys
-        # newfilanme: desired name of the .csv fiole that will be createcd in getData cotnaining all of the ESP/other data extracted un the file
+        # Current API uses molden_paths/xyz_paths; folders are derived from those paths.
 
     # ============================================================================
     # CONSOLIDATED ESP AND E-FIELD METHODS
@@ -1883,6 +2036,7 @@ Correct usage:
             Output CSV filename (without extension).
         multiwfn_path : str
             Path to Multiwfn executable.
+            Ignored when pdb_charge_paths is provided.
         use_multipole : bool, optional
             If True, use multipole expansion; if False, use monopole charges (default: False).
         include_decay : bool, optional
@@ -2071,7 +2225,7 @@ Skipping to next charge type (skip_missing_files=True)
                             if ptchg_path is not None:
                                 ptchg_path = os.path.abspath(ptchg_path)
                         else:
-                            # Use helper method (handles both new and legacy API)
+                            # Use helper method (handles list and filename modes)
                             ptchg_path = self._get_ptchg_path_for_job(counter - 1, f, override_path=None)
 
                         if ptchg_path is not None and not os.path.exists(ptchg_path):
@@ -2208,7 +2362,8 @@ Please verify the file exists or set the path to None for jobs without point cha
     def getEfield(self, charge_types, Efielddata_filename, multiwfn_path,
                   multipole_bool=False, input_bond_indices=[], auto_find_bonds=False,
                   save_atomwise_decomposition=False, visualize=None, dielectric=1,
-                  dielectric_scale=1, includePtChgs=None, ptchg_paths=None):
+                  dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
+                  pdb_charge_paths=None):
         """Unified E-field calculation method supporting multiple modes.
 
         This consolidated method replaces getEFieldMultipole(), getEfield_acrossBond(),
@@ -2217,20 +2372,22 @@ Please verify the file exists or set the path to None for jobs without point cha
         Parameters
         ----------
         charge_types : str or list of str
-            Charge partitioning scheme. Options: 'Hirshfeld', 'Becke', 'Hirshfeld_I', etc.
+            Charge partitioning scheme. If a list is provided, only the first entry is used.
+            Options: 'Hirshfeld', 'Becke', 'Hirshfeld_I', etc.
+            When pdb_charge_paths is provided, this value is used for labeling only.
         Efielddata_filename : str
             Output CSV filename (without extension).
         multiwfn_path : str
             Path to Multiwfn executable.
         multipole_bool : bool, optional
-            If True, use multipole expansion; if False, use monopole charges (default: True).
+            If True, use multipole expansion; if False, use monopole charges (default: False).
         input_bond_indices : list, optional
             Bond indices as list of tuples [(atomA, atomB), ...].
-            If empty and auto_find_bonds=False, uses metal_idx from lst_of_tmcm_idx.
-            If empty and auto_find_bonds=True, automatically finds bonded atoms.
+            If empty, bonds are auto-found using metal indices (lst_of_tmcm_idx).
+            If provided, bonds are used as-is unless auto_find_bonds=True.
         auto_find_bonds : bool, optional
-            If True and input_bond_indices is empty, automatically find bonds to adjacent atoms
-            using getBondedAtoms() for each metal center (default: False).
+            If True, automatically find bonds to adjacent atoms using getBondedAtoms()
+            and ignore input_bond_indices (default: False).
         save_atomwise_decomposition : bool, optional
             If True, save atom-wise E-field decomposition to CSV (default: False).
         visualize : bool or None, optional
@@ -2247,6 +2404,10 @@ Please verify the file exists or set the path to None for jobs without point cha
             Override point charge file paths for this calculation.
             List of paths (one per job), with None for jobs without point charges.
             If provided, takes precedence over object-level settings (default: None).
+        pdb_charge_paths : str or list of str or None, optional
+            If provided, use partial charges from PDB B-factor columns only (no Multiwfn).
+            Can be a single PDB path or a list of paths (one per job), with None to skip a job.
+            This mode supports monopole charges only (multipole_bool must be False).
 
         Returns
         -------
@@ -2290,6 +2451,11 @@ Please verify the file exists or set the path to None for jobs without point cha
         >>> # Monopole mode with atom-wise decomposition
         >>> es.getEfield('Hirshfeld', 'efield', ..., multipole_bool=False, save_atomwise_decomposition=True)
         """
+        use_pdb_charges = pdb_charge_paths is not None
+
+        if use_pdb_charges and multipole_bool:
+            raise ValueError("PDB charge mode supports monopole charges only. Set multipole_bool=False.")
+
         # Ensure charge_types is a string (E-field works with single scheme)
         if isinstance(charge_types, list):
             if len(charge_types) > 1:
@@ -2298,19 +2464,20 @@ Please verify the file exists or set the path to None for jobs without point cha
         else:
             charge_type = charge_types
 
-        # Filter charge type based on multipole/monopole mode
-        if multipole_bool:
-            filtered_types = filter_charge_types_for_multipole(charge_type, context="getEfield")
-            if not filtered_types:
-                # Return empty DataFrame if charge type not supported
-                return pd.DataFrame()
-            charge_type = filtered_types[0]
-        else:
-            filtered_types = filter_charge_types_for_monopole(charge_type, context="getEfield")
-            if not filtered_types:
-                # Return empty DataFrame if charge type not supported
-                return pd.DataFrame()
-            charge_type = filtered_types[0]
+        # Filter charge type based on multipole/monopole mode (skip for PDB charge mode)
+        if not use_pdb_charges:
+            if multipole_bool:
+                filtered_types = filter_charge_types_for_multipole(charge_type, context="getEfield")
+                if not filtered_types:
+                    # Return empty DataFrame if charge type not supported
+                    return pd.DataFrame()
+                charge_type = filtered_types[0]
+            else:
+                filtered_types = filter_charge_types_for_monopole(charge_type, context="getEfield")
+                if not filtered_types:
+                    # Return empty DataFrame if charge type not supported
+                    return pd.DataFrame()
+                charge_type = filtered_types[0]
 
         self.config['dielectric'] = dielectric
         self.config['dielectric_scale'] = dielectric_scale
@@ -2406,29 +2573,35 @@ For complete examples, see:
                     counter += 1
                     continue
 
-                # Partition charges - extract actual filenames from paths
-                molden_filename = os.path.basename(self.molden_paths[counter])
-                xyz_filename = os.path.basename(self.xyz_paths[counter])
-                comp_cost = self.multiwfn.partitionCharge(
-                    multipole_bool, f, multiwfn_path, charge_type, owd,
-                    molden_filename=molden_filename, xyz_filename=xyz_filename
-                )
+                # Partition charges unless using PDB charge mode
+                if not use_pdb_charges:
+                    # Partition charges - extract actual filenames from paths
+                    molden_filename = os.path.basename(self.molden_paths[counter])
+                    xyz_filename = os.path.basename(self.xyz_paths[counter])
+                    comp_cost = self.multiwfn.partitionCharge(
+                        multipole_bool, f, multiwfn_path, charge_type, owd,
+                        molden_filename=molden_filename, xyz_filename=xyz_filename
+                    )
 
-                if comp_cost == -1:
-                    print(f"Warning: Charge calculation failed for {f}")
-                    counter += 1
-                    continue
+                    if comp_cost == -1:
+                        print(f"Warning: Charge calculation failed for {f}")
+                        counter += 1
+                        continue
 
-                # Use directory path directly (f is already absolute path from lst_of_folders)
-                file_path_multipole = f"{f}/Multipole{charge_type}.txt"
-                file_path_charges = f"{f}/Charges{charge_type}.txt"
+                    # Use directory path directly (f is already absolute path from lst_of_folders)
+                    file_path_multipole = f"{f}/Multipole{charge_type}.txt"
+                    file_path_charges = f"{f}/Charges{charge_type}.txt"
+                else:
+                    comp_cost = 0
+                    file_path_multipole = None
+                    file_path_charges = None
 
-                # Handle point charges with function-level overrides
+                # Handle point charges with function-level overrides (skip in PDB charge mode)
                 df_ptchg = None
                 ptchg_path = None
                 should_include_ptchg = includePtChgs if includePtChgs is not None else self.config.get('includePtChgs', False)
 
-                if should_include_ptchg:
+                if should_include_ptchg and not use_pdb_charges:
                     # Get path for this specific job
                     if ptchg_paths is not None:
                         # Function-level override
@@ -2440,7 +2613,7 @@ For complete examples, see:
                         if ptchg_path is not None:
                             ptchg_path = os.path.abspath(ptchg_path)
                     else:
-                        # Use helper method to get path (handles both new and legacy API)
+                        # Use helper method to get path (handles list and filename modes)
                         ptchg_path = self._get_ptchg_path_for_job(counter, f, override_path=None)
 
                     if ptchg_path is not None:
@@ -2478,21 +2651,82 @@ Please verify the file exists or set the path to None for jobs without point cha
                 # Select appropriate file path
                 path_to_pol = file_path_multipole if multipole_bool else file_path_charges
                 temp_xyz = file_path_xyz if multipole_bool else ''
+                if use_pdb_charges:
+                    path_to_pol = file_path_xyz
+                    temp_xyz = ''
+
+                # Load PDB charges if requested
+                df_pdb_charges = None
+                if use_pdb_charges:
+                    if isinstance(pdb_charge_paths, list):
+                        if counter >= len(pdb_charge_paths):
+                            raise IndexError(f"Job index {counter} out of range for pdb_charge_paths (length {len(pdb_charge_paths)})")
+                        pdb_charge_path = pdb_charge_paths[counter]
+                    else:
+                        pdb_charge_path = pdb_charge_paths
+
+                    if pdb_charge_path is None:
+                        print(f"Warning: No PDB charge file for {f}, skipping")
+                        counter += 1
+                        continue
+
+                    pdb_charge_path = os.path.abspath(pdb_charge_path)
+                    if not os.path.exists(pdb_charge_path):
+                        if self.config.get('skip_missing_files', False):
+                            print(f"""
+{'='*60}
+WARNING: PDB charge file not found - skipping this calculation
+{'='*60}
+Expected path: {pdb_charge_path}
+Job index: {counter}
+Job folder: {f}
+
+Skipping to next job (skip_missing_files=True)
+{'='*60}
+""")
+                            counter += 1
+                            continue
+                        raise FileNotFoundError(f"""
+{'='*60}
+ERROR: PDB charge file not found
+{'='*60}
+Expected path: {pdb_charge_path}
+Job index: {counter}
+Job folder: {f}
+
+Please verify the file exists or set the path to None for jobs without charges.
+{'='*60}
+""")
+
+                    df_pdb_charges = self.getPdbCharges(pdb_charge_path)
+                    total_atoms = total_lines - 2
+                    if len(df_pdb_charges) != total_atoms:
+                        raise ValueError(
+                            f"PDB charge count mismatch for {pdb_charge_path}: "
+                            f"{len(df_pdb_charges)} charges vs {total_atoms} atoms in {file_path_xyz}"
+                        )
 
                 # Calculate E-field with atom-wise decomposition
-                [proj_Efields, bondedAs, bonded_idx, bond_lens, E_proj_atomwise,
-                 E_proj_atomwise_list] = self.bondEfield(
-                    bond_indices_to_use, file_path_xyz, path_to_pol, all_lines,
-                    multipole_bool, df_ptchg=df_ptchg
-                )
+                if use_pdb_charges:
+                    [proj_Efields, bondedAs, bonded_idx, bond_lens, E_proj_atomwise,
+                     E_proj_atomwise_list] = self.bondEfield_pointcharges(
+                        bond_indices_to_use, df_pdb_charges, all_lines
+                    )
+                else:
+                    [proj_Efields, bondedAs, bonded_idx, bond_lens, E_proj_atomwise,
+                     E_proj_atomwise_list] = self.bondEfield(
+                        bond_indices_to_use, file_path_xyz, path_to_pol, all_lines,
+                        multipole_bool, df_ptchg=df_ptchg
+                    )
 
                 # Calculate bond dipoles for each bond
                 bond_dipoles = self.calc_bond_dipoles(
-                    bond_indices_to_use, file_path_xyz, path_to_pol, multipole_bool
+                    bond_indices_to_use, file_path_xyz, path_to_pol, multipole_bool, charge_df=df_pdb_charges
                 )
 
                 # Get charge data for visualization
-                df = Electrostatics.charge_atoms(self, path_to_pol, temp_xyz)
+                if not use_pdb_charges:
+                    df = Electrostatics.charge_atoms(self, path_to_pol, temp_xyz)
 
                 # Visualization: E-field atom-wise contributions
                 if viz_efield and E_proj_atomwise is not None:
@@ -4033,7 +4267,7 @@ For complete examples, see:
                     if ptchg_path is not None:
                         ptchg_path = os.path.abspath(ptchg_path)
                 else:
-                    # Use helper method (handles both new and legacy API)
+                    # Use helper method (handles list and filename modes)
                     ptchg_path = self._get_ptchg_path_for_job(counter, f, override_path=None)
 
                 if ptchg_path is not None:
@@ -4335,5 +4569,3 @@ def visualize_charges_pdb(xyz_file, charges, pdb_name):
         # Restore stderr
         sys.stderr.close()
         sys.stderr = stderr_backup
-
-
