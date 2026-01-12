@@ -30,7 +30,7 @@ def main(job_name, molden_paths, xyz_paths, analysis_types, metal_indices, bond_
     dielectric : float
         Dielectric constant
     geom_flag : bool
-        Run geometry checks
+        Geometry checks are currently not implemented; flag is accepted but skipped
     multiwfn_path : str
         Path to Multiwfn executable
     charge_types : list of str, optional
@@ -125,11 +125,7 @@ def main(job_name, molden_paths, xyz_paths, analysis_types, metal_indices, bond_
 
         # Run geometry check if requested
         if geom_flag:
-            # Method will calculate various RMSD, molsimplify error parameters/flags
-            # NOTE: errorAnalysis() method does not exist in Electrostatics class
-            # TODO: Implement errorAnalysis() or remove this functionality
-            # dataObject.errorAnalysis('Errordata')
-            pass
+            print("Warning: geometry checks are not implemented yet; skipping.")
 
         # Run the appropriate analysis
         if analysis_type == 'esp':
