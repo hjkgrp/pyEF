@@ -1,4 +1,4 @@
-# PyEF
+# pyEF
 
 A Python package for calculating electric fields, electrostatic potentials (ESP), and electrostatic interactions from quantum mechanical calculations.
 
