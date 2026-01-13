@@ -20,23 +20,26 @@ pip install -e .
 
 ### Installing Multiwfn
 
-PyEF requires [Multiwfn](http://sobereva.com/multiwfn/) for charge partitioning and wavefunction analysis.
+PyEF requires [Multiwfn](http://sobereva.com/multiwfn/) for charge partitioning and wavefunction analysis. 
+
 
 **Download and compile:**
 ```bash
 # Download from http://sobereva.com/multiwfn/
-wget http://sobereva.com/multiwfn/misc/Multiwfn_3.8_dev_bin_Linux.zip
-unzip Multiwfn_3.8_dev_bin_Linux.zip
-cd Multiwfn_3.8_dev_bin_Linux
-chmod +x Multiwfn
+wget http://sobereva.com/multiwfn/misc/Multiwfn_3.8_bin_Linux_noGUI.zip
+unzip Multiwfn_3.8_bin_Linux_noGUI.zip 
+cd Multiwfn_3.8_bin_Linux_noGUI
+
+#give executable permission to the Multiwfn executable file
+chmod +x Multiwfn_noGUI
 ```
 
 **Add to your PATH (add to ~/.bashrc):**
 ```bash
-export PATH=/path/to/Multiwfn_3.8_dev_bin_Linux:$PATH
+export PATH=/path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI:$PATH
 ```
 
-Or use the full path when running PyEF (e.g., `multiwfn_path: /path/to/Multiwfn_3.8_dev_bin_Linux/Multiwfn`).
+Or use the full path when running PyEF (e.g., `multiwfn_path: /path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI`).
 
 ## 2. Basic Usage
 
