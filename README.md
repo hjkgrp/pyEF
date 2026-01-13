@@ -22,6 +22,7 @@ pip install -e .
 
 PyEF requires [Multiwfn](http://sobereva.com/multiwfn/) for charge partitioning and wavefunction analysis. 
 
+NOTE: *currently Multiwfn is NOT supported on MACOSX, so we recommend using a linux or windows system.*
 
 **Download and compile:**
 ```bash
