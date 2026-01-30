@@ -1,21 +1,44 @@
 # readthedocs.yml
+# Configuration file for building PyEF documentation on Read the Docs
+# Covers both CLI and Python API documentation
 
 version: 2
 
+# Build environment configuration
 build:
   os: ubuntu-22.04
   tools:
     python: mambaforge-22.9
+  jobs:
+    post_create_environment:
+      # Ensure pip is up to date
+      - pip install --upgrade pip setuptools wheel
+    post_install:
+      # Verify installation
+      - python -c "import pyef; print(f'PyEF version: {pyef.__version__}')"
+      - pip list
 
+# Conda environment with documentation dependencies
 conda:
   environment: docs/requirements.yaml
 
+# Sphinx configuration for building HTML documentation
 sphinx:
   configuration: docs/conf.py
   builder: html
   fail_on_warning: false
 
+# Python package installation
+# This ensures both the CLI (pyef.cli) and Python API (pyef.analysis) are available
 python:
   install:
     - method: pip
       path: .
+      extra_requirements:
+        - test
+
+# Documentation structure:
+# - CLI documentation: pyef.cli module with command-line interface
+# - Python API documentation: pyef.analysis (Electrostatics class) and supporting modules
+# - Getting Started guide: docs/getting_started.rst with CLI and API examples
+# - API Reference: docs/api.rst with complete module documentation

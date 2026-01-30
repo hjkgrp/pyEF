@@ -1,87 +1,105 @@
-API Documentation
-=================
+API Reference
+=============
 
-This page contains the API reference for PyEF. The package is organized into several modules,
-each providing specific functionality for electric field and electrostatics analysis.
-
-Main Modules
-------------
-
-.. autosummary::
-   :toctree: autosummary/
-   :recursive:
-
-   pyef.analysis
-   pyef.cli
-   pyef.run
-   pyef.geometry
-   pyef.utility
-   pyef.manage
-   pyef.multiwfn_interface
-   pyef.constants
-
-Module Descriptions
--------------------
-
-**pyef.analysis**
-    Core analysis module containing the ``Electrostatics`` class for calculating electric fields,
-    electrostatic potentials, and electrostatic stabilization energies. This is the main module
-    for performing calculations.
-
-**pyef.cli**
-    Command-line interface module that provides the ``pyef`` command for batch processing.
-    Handles argument parsing and workflow orchestration.
-
-**pyef.run**
-    Workflow execution module that manages the processing pipeline for multiple jobs,
-    including data preparation, analysis execution, and results compilation.
-
-**pyef.geometry**
-    Geometry checking and validation utilities. Provides functions for verifying molecular
-    geometries and detecting structural issues.
-
-**pyef.utility**
-    General utility functions for file I/O, data manipulation, coordinate transformations,
-    and other common operations used throughout the package.
-
-**pyef.manage**
-    File management utilities for handling molden files, XYZ files, and other molecular
-    structure formats. Includes functions for data organization and preprocessing.
-
-**pyef.multiwfn_interface**
-    Interface module for communicating with the Multiwfn program. Handles input generation,
-    process execution, and output parsing for charge analysis and multipole calculations.
-
-**pyef.constants**
-    Physical and mathematical constants used in electrostatics calculations, including
-    conversion factors and fundamental constants.
-
-Key Classes and Functions
---------------------------
+This page documents the main classes and functions for computing electric fields,
+electrostatic potentials, and partial charges.
 
 Electrostatics Class
-~~~~~~~~~~~~~~~~~~~~
+--------------------
 
-The ``Electrostatics`` class in ``pyef.analysis`` is the primary interface for all calculations:
+The ``Electrostatics`` class in ``pyef.analysis`` is the main interface for all calculations.
+
+Initialization
+~~~~~~~~~~~~~~
 
 .. code-block:: python
 
-    from pyef.analysis import Electrostatics
+   from pyef.analysis import Electrostatics
 
-    # Initialize
-    es = Electrostatics(molden_paths, xyz_paths, dielectric=4.0)
+   es = Electrostatics(
+       molden_paths,      # List of .molden file paths
+       xyz_paths,         # List of .xyz file paths
+       lst_of_tmcm_idx=None,  # Metal atom indices for ESP (0-indexed)
+       dielectric=1,      # Dielectric constant
+       ptchg_paths=None   # Point charge files for QM/MM
+   )
 
-    # Main methods:
-    # - getEfield(): Calculate electric fields
-    # - getESP(): Calculate electrostatic potentials
-    # - getElectrostatic_stabilization(): Calculate stabilization energies
-    # - includePtChgs(): Include QM/MM point charges
-    # - set_dielec_scale(): Set dielectric scaling factor
+**Required parameters:**
 
-For detailed method signatures and parameters, see the auto-generated API documentation below.
+- ``molden_paths`` (list of str): Paths to molden files, one per structure
+- ``xyz_paths`` (list of str): Paths to XYZ files, one per structure
 
-Complete API Reference
-----------------------
+**Optional parameters:**
+
+- ``lst_of_tmcm_idx`` (list of int): Metal atom indices for ESP calculations
+- ``dielectric`` (float): Dielectric constant (1=vacuum, 4=protein, 78.5=water)
+- ``ptchg_paths`` (list): Point charge file paths for QM/MM calculations
+
+getEfield() - Electric Field
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   df = es.getEfield(
+       charge_types,           # 'Hirshfeld_I', 'CHELPG', etc.
+       Efielddata_filename,    # Output filename prefix
+       multiwfn_path,          # Path to Multiwfn executable
+       input_bond_indices=[],  # [(atom1, atom2), ...]
+       multipole_bool=False,   # Use multipole expansion
+       dielectric=1            # Dielectric constant
+   )
+
+**Parameters:**
+
+- ``charge_types`` (str or list): Charge scheme(s) to use
+- ``Efielddata_filename`` (str): Output CSV filename prefix
+- ``multiwfn_path`` (str): Path to Multiwfn executable
+- ``input_bond_indices`` (list of tuples): Bond pairs as (atom1, atom2)
+- ``multipole_bool`` (bool): True for multipole expansion, False for monopole
+- ``dielectric`` (float): Dielectric constant
+
+**Returns:** DataFrame with electric field results
+
+getESP() - Electrostatic Potential
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   df = es.getESP(
+       charge_types,        # 'Hirshfeld_I', 'CHELPG', etc.
+       ESPdata_filename,    # Output filename prefix
+       multiwfn_path,       # Path to Multiwfn executable
+       use_multipole=False, # Use multipole expansion
+       dielectric=1         # Dielectric constant
+   )
+
+**Parameters:**
+
+- ``charge_types`` (str or list): Charge scheme(s) to use
+- ``ESPdata_filename`` (str): Output CSV filename prefix
+- ``multiwfn_path`` (str): Path to Multiwfn executable
+- ``use_multipole`` (bool): True for multipole expansion
+- ``dielectric`` (float): Dielectric constant
+
+**Returns:** DataFrame with ESP results
+
+**Note:** Requires ``lst_of_tmcm_idx`` to be set during initialization.
+
+Charge Schemes
+--------------
+
+**Available schemes:**
+
+- Hirshfeld, Hirshfeld_I, Voronoi, Mulliken, Lowdin
+- SCPA, Becke, ADCH, CHELPG, MK, AIM
+- CM5, EEM, RESP, PEOE
+
+**Multipole-capable schemes** (for ``multipole_bool=True`` or ``use_multipole=True``):
+
+- Hirshfeld, Hirshfeld_I, Becke
+
+Module Reference
+----------------
 
 .. automodule:: pyef.analysis
    :members:
@@ -93,32 +111,12 @@ Complete API Reference
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: pyef.run
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: pyef.geometry
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 .. automodule:: pyef.utility
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: pyef.manage
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 .. automodule:: pyef.multiwfn_interface
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. automodule:: pyef.constants
    :members:
    :undoc-members:
    :show-inheritance:
