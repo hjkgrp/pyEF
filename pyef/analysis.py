@@ -2957,6 +2957,177 @@ Please verify the file exists or set the path to None for jobs without charges.
 
         return df
 
+    def getCharges(self, charge_types, multiwfn_path, output_filename='charges',
+                   write_pdb=False, pdb_bfactor=True):
+        """Compute partial charges for all atoms using specified charge partitioning scheme(s).
+
+        This method provides a standalone interface for computing partial charges
+        without calculating E-fields or ESP. Charges can optionally be written to
+        PDB files with the B-factor column containing the charge values.
+
+        Parameters
+        ----------
+        charge_types : str or list of str
+            Charge partitioning scheme(s) to use. Options include:
+            'RESP', 'Hirshfeld', 'Hirshfeld_I', 'CHELPG', 'Mulliken', 'Lowdin',
+            'SCPA', 'Becke', 'ADCH', 'Voronoi', 'MK', 'AIM', 'CM5', 'EEM', 'PEOE'
+        multiwfn_path : str
+            Path to the Multiwfn executable.
+        output_filename : str, optional
+            Base name for output files (default: 'charges').
+            CSV will be saved as '{output_filename}.csv'.
+        write_pdb : bool, optional
+            If True, create PDB files for each structure (default: False).
+        pdb_bfactor : bool, optional
+            If True and write_pdb=True, store charges in B-factor column (default: True).
+            This allows visualization of charges in molecular viewers like PyMOL.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame containing partial charges for all atoms in each structure.
+            Columns include: 'Job', 'Charge_Type', 'Atom_Index', 'Element',
+            'x', 'y', 'z', 'Charge'.
+
+        Output Files
+        ------------
+        **CSV file:** `{output_filename}.csv`
+            Contains all partial charges for all atoms and all jobs.
+
+        **PDB files (if write_pdb=True):** `{structure}_{charge_type}_charges.pdb`
+            One PDB file per job per charge type.
+            B-factor column contains the partial charge values.
+
+        Examples
+        --------
+        >>> es = Electrostatics(molden_paths, xyz_paths)
+        >>>
+        >>> # Get RESP charges for all atoms
+        >>> df = es.getCharges('RESP', '/path/to/multiwfn')
+        >>>
+        >>> # Get multiple charge types with PDB output
+        >>> df = es.getCharges(['RESP', 'Hirshfeld_I'], '/path/to/multiwfn',
+        ...                    output_filename='my_charges', write_pdb=True)
+        >>>
+        >>> # Access charges for a specific atom
+        >>> atom_5_charges = df[df['Atom_Index'] == 5]
+
+        Notes
+        -----
+        - Charges are computed via Multiwfn and cached in 'Charges{type}.txt' files.
+        - Subsequent calls with the same charge type will reuse cached results
+          unless config['rerun'] is True.
+        - PDB files with B-factor charges can be visualized in PyMOL using:
+          spectrum b, blue_white_red, minimum=-1, maximum=1
+        """
+        # Ensure charge_types is a list
+        if isinstance(charge_types, str):
+            charge_types = [charge_types]
+
+        # Filter charge types for monopole analysis
+        charge_types = filter_charge_types_for_monopole(charge_types, context="getCharges")
+
+        if not charge_types:
+            raise ValueError("No valid charge types provided. Check that the charge types are supported.")
+
+        owd = os.getcwd()
+        all_results = []
+
+        print(f"\n{'='*60}")
+        print(f"Computing partial charges")
+        print(f"Charge types: {charge_types}")
+        print(f"Number of jobs: {len(self.lst_of_folders)}")
+        print(f"{'='*60}\n")
+
+        for counter, f in enumerate(self.lst_of_folders):
+            # Convert f to string if it's not already (handles int folder names)
+            f = str(f)
+            job_name = os.path.basename(f.rstrip('/'))
+
+            # Get actual filenames from stored paths
+            molden_filename = os.path.basename(self.molden_paths[counter])
+            xyz_filename = os.path.basename(self.xyz_paths[counter])
+            file_path_xyz = self.xyz_paths[counter]
+
+            print(f"\nProcessing job {counter + 1}/{len(self.lst_of_folders)}: {job_name}")
+
+            for charge_type in charge_types:
+                print(f"  Computing {charge_type} charges...")
+
+                # Run charge partitioning via Multiwfn
+                comp_cost = self.multiwfn.partitionCharge(
+                    multipole_bool=False,
+                    f=f,
+                    multiwfn_path=multiwfn_path,
+                    charge_type=charge_type,
+                    owd=owd,
+                    molden_filename=molden_filename,
+                    xyz_filename=xyz_filename
+                )
+
+                if comp_cost == -1:
+                    print(f"  ERROR: Failed to compute {charge_type} charges for {job_name}")
+                    continue
+
+                # Read the computed charges
+                charge_file = f"{f}/Charges{charge_type}.txt"
+
+                if not os.path.exists(charge_file):
+                    print(f"  ERROR: Charge file not found: {charge_file}")
+                    continue
+
+                # Parse charge file (format: Element x y z charge)
+                try:
+                    df_charges = pd.read_csv(charge_file, sep=r'\s+',
+                                            names=["Element", 'x', 'y', 'z', "Charge"])
+                    df_charges['Atom_Index'] = range(len(df_charges))
+                    df_charges['Job'] = job_name
+                    df_charges['Charge_Type'] = charge_type
+                    df_charges['Molden_Path'] = self.molden_paths[counter]
+                    df_charges['XYZ_Path'] = file_path_xyz
+
+                    # Reorder columns
+                    df_charges = df_charges[['Job', 'Charge_Type', 'Atom_Index', 'Element',
+                                            'x', 'y', 'z', 'Charge', 'Molden_Path', 'XYZ_Path']]
+
+                    all_results.append(df_charges)
+
+                    total_charge = df_charges['Charge'].sum()
+                    print(f"    Loaded {len(df_charges)} atoms, total charge: {total_charge:.4f}")
+
+                    # Create PDB with charges in B-factor column
+                    if write_pdb and pdb_bfactor:
+                        pdb_name = f"{f}/{job_name}_{charge_type}_charges.pdb"
+                        charges_array = df_charges['Charge'].values
+
+                        try:
+                            visualize_charges_pdb(file_path_xyz, charges_array, pdb_name)
+                            print(f"    Created PDB: {os.path.basename(pdb_name)}")
+                        except Exception as e:
+                            print(f"    Warning: Could not create PDB file: {e}")
+
+                except Exception as e:
+                    print(f"  ERROR reading charge file: {e}")
+                    continue
+
+        os.chdir(owd)
+
+        if not all_results:
+            print("\nNo charge results were computed successfully.")
+            return pd.DataFrame()
+
+        # Combine all results
+        df = pd.concat(all_results, ignore_index=True)
+
+        # Save to CSV
+        csv_filename = f"{output_filename}.csv"
+        df.to_csv(csv_filename, index=False)
+        print(f"\n{'='*60}")
+        print(f"Saved charges to: {csv_filename}")
+        print(f"Total atoms: {len(df)}")
+        print(f"{'='*60}\n")
+
+        return df
 
 
     def get_residues(self, auto_gen, solute_solvent_dict):
