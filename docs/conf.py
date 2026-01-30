@@ -112,12 +112,9 @@ templates_path = ['_templates']
 html_context = {
     "landing_page": {
         "menu": [{
-            "title": "pyef", 
+            "title": "pyef",
              "url": "https://pyef.readthedocs.io/"
-             },{
-                "title": "Author",
-                "url": "https://kastner.io/en/",
-            }]
+             }]
     }
 }
 

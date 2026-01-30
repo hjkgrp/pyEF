@@ -134,6 +134,34 @@ df = es.getElectrostatic_stabilization('/path/to/multiwfn',
                                         multipole_order=2)
 ```
 
+### Partial Charge Calculation
+
+**Python API:**
+```python
+from pyef.analysis import Electrostatics
+
+molden_paths = ['/path/to/structure.molden']
+xyz_paths = ['/path/to/structure.xyz']
+
+es = Electrostatics(molden_paths, xyz_paths)
+
+# Get RESP charges for all atoms
+df = es.getCharges('RESP', '/path/to/multiwfn')
+
+# Get multiple charge types with PDB output for visualization
+df = es.getCharges(['RESP', 'Hirshfeld_I'], '/path/to/multiwfn',
+                   output_filename='my_charges', write_pdb=True)
+```
+
+**Output:** Returns a DataFrame with columns: `Job`, `Charge_Type`, `Atom_Index`, `Element`, `x`, `y`, `z`, `Charge`, `Molden_Path`, `XYZ_Path`.
+
+**Available charge types:** `RESP`, `Hirshfeld`, `Hirshfeld_I`, `CHELPG`, `Mulliken`, `Lowdin`, `SCPA`, `Becke`, `ADCH`, `Voronoi`, `MK`, `AIM`, `CM5`, `EEM`, `PEOE`
+
+**PDB visualization:** When `write_pdb=True`, creates PDB files with charges in the B-factor column. Visualize in PyMOL with:
+```
+spectrum b, blue_white_red, minimum=-1, maximum=1
+```
+
 ---
 
 **Authors:** Melissa Manetsch and David W. Kastner
