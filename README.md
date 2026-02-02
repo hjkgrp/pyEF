@@ -68,12 +68,24 @@ pyef -c config.yaml
 ```python
 from pyef.analysis import Electrostatics
 
-molden_paths = ['/path/to/structure.molden']
-xyz_paths = ['/path/to/structure.xyz']
+molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
 
+#create an electrostatics object associated with the file structure
 es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
-df = es.getEfield('Hirshfeld_I', 'output', '/path/to/multiwfn',
-                  input_bond_indices=[(25, 26)])
+
+#Record the indices (0-index) for the bonds to project Efield across. Here I have one bond: (0, 10) in structure 1 and two bonds: (20, 21) and (25, 26) in structure 2
+ef_bond = [[(0, 10)], [(20, 21), (25, 26)]
+
+#record indices of the substrate containins bonds of interest in structure 1, and structure 2
+sub_indices = [ np.arange(0,10), np.arange(10,25)]
+
+#exclude substrates from Efield calc (here we are only probing impact of environmnet on bond, NOT intramolecular polarization)
+es.setExcludeAtomFromCalc(sub_indices)
+
+#charge_types can be a list or single value like here
+df = es.getEfield(charge_types='Hirshfeld_I', Efielddata_filename='output', multiwfn_path='/path/to/multiwfn',
+                  input_bond_indices=sub_indices)
 ```
 
 ### Electrostatic Potential (ESP) Calculation
