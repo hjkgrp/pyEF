@@ -532,7 +532,7 @@ To find the correct atom index:
 3. The Nth atom has index N-1
 
 Example for a 50-atom system:
-  lst_of_tmcm_idx: [25]     # Valid (< 50)
+  esp_atom_idx: [25]     # Valid (< 50)
   substrate_idxs: [0, 1, 2]  # Valid
   # atom index 50 would be INVALID (>= 50)
 

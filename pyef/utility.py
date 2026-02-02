@@ -28,6 +28,7 @@ import shutil
 import logging
 import traceback
 import subprocess
+import warnings
 import numpy as np
 import pandas as pd
 import scipy.linalg as la
@@ -717,59 +718,87 @@ class MultiwfnInterface:
                         path_to_init_file = str(ini_path)
                         command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
 
-                    multiwfn_commands = ['15', '-1'] + self.dict_of_multipole[charge_type] + ['0', 'q']
-                    num_atoms = self.count_atoms(final_structure_file)
+                        multiwfn_commands = ['15', '-1'] + self.dict_of_multipole[charge_type] + ['0', 'q']
+                        num_atoms = self.count_atoms(final_structure_file)
 
-                    if charge_type == 'Hirshfeld_I':
-                        # Get the number of basis functions
-                        molden_full_path = f"{os.getcwd()}/{molden_filename}"
-                        num_basis = MoldenObject(file_path_xyz, molden_full_path).countBasis()
+                        if charge_type == 'Hirshfeld_I':
+                            # Get the number of basis functions
+                            molden_full_path = f"{os.getcwd()}/{molden_filename}"
+                            num_basis = MoldenObject(file_path_xyz, molden_full_path).countBasis()
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
 
-                        print(f'Current num of basis is: {num_basis}')
-                        print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
-                        if num_basis > self.config['maxIHirshFuzzyBasis']:
-                            print(f'Number of basis functions: {num_basis}')
-                            multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
-                            print(f'I-Hirshfeld command should be low memory and slow to accommodate large system')
+                            print(f'Current num of basis is: {num_basis}')
+                            print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
+                            if num_basis > self.config['maxIHirshFuzzyBasis']:
+                                print(f'Number of basis functions: {num_basis}')
+                                multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
+                                print(f'I-Hirshfeld command should be low memory and slow to accommodate large system')
 
-                    # Use centralized Multiwfn runner
-                    self.run_multiwfn(
-                        command=command,
-                        input_commands=multiwfn_commands,
-                        output_file=file_path_multipole,
-                        description=f"Multipole {charge_type} calculation for {f}"
-                    )
+                        # Use centralized Multiwfn runner
+                        self.run_multiwfn(
+                            command=command,
+                            input_commands=multiwfn_commands,
+                            output_file=file_path_multipole,
+                            description=f"Multipole {charge_type} calculation for {f}"
+                        )
 
                 else:
-                    command = f"{multiwfn_path} {molden_filename}"
-                    chg_prefix, _ = os.path.splitext(molden_filename)
-                    calc_command = self.dict_of_calcs[charge_type]
-                    commands = ['7', calc_command, '1', 'y', '0', 'q']  # for atomic charge type
+                    # Dynamically get path to package settings.ini file
+                    with resources.path('pyef.resources', 'settings.ini') as ini_path:
+                        path_to_init_file = str(ini_path)
+                        command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
+                        chg_prefix, _ = os.path.splitext(molden_filename)
+                        calc_command = self.dict_of_calcs[charge_type]
+                        # Default command for most charge types (Hirshfeld, Voronoi, ADCH, CM5)
+                        # These have sub-menu where option 1 = use built-in densities or output charges
+                        commands = ['7', calc_command, '1', 'y', '0', 'q']
 
-                    if charge_type == 'CHELPG':
-                        commands = ['7', calc_command, '1', '\n', 'y', '0', 'q']
-                    elif charge_type == 'Hirshfeld_I':
-                        num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
-                        print(f'Number of basis functions: {num_basis}')
-                        if num_basis > self.config['maxIHirshBasis']:
-                            commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
+                        if charge_type == 'Mulliken':
+                            # Mulliken has a sub-menu that needs extra '0' to exit back to population menu
+                            commands = ['7', '5', '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Becke':
+                            # Becke has sub-menu: 0=Start calculation
+                            commands = ['7', '10', '0', 'y', '0', 'q']
+                        elif charge_type == 'SCPA':
+                            # SCPA directly calculates, no sub-menu
+                            commands = ['7', '7', 'y', '0', 'q']
+                        elif charge_type == 'Lowdin':
+                            # Lowdin asks for output path (empty=screen), then y/n for .chg file
+                            commands = ['7', '6', '', 'y', '0', 'q']
+                        elif charge_type == 'EEM':
+                            # EEM needs 'g' to guess bonds from molden, then 0=start calculation
+                            commands = ['7', '17', 'g', '0', 'y', '0', 'q']
+                        elif charge_type == 'PEOE':
+                            # PEOE directly calculates (may fail for some elements like Na)
+                            commands = ['7', '19', 'y', '0', 'q']
+                        elif charge_type == 'AIM':
+                            # AIM is not available in menu 7 - needs basin analysis module
+                            print(f"WARNING: AIM charges cannot be calculated in population analysis module.")
+                            print(f"         Use basin analysis module (main menu 17) instead.")
+                            raise ValueError("AIM charge calculation not supported in this module")
+                        elif charge_type in ['CHELPG', 'RESP', 'MK']:
+                            commands = ['7', calc_command, '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Hirshfeld_I':
+                            num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
+                            print(f'Number of basis functions: {num_basis}')
+                            if num_basis > self.config['maxIHirshBasis']:
+                                commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
 
-                    # Use centralized Multiwfn runner
-                    self.run_multiwfn(
-                        command=command,
-                        input_commands=commands,
-                        description=f"Monopole {charge_type} calculation for {f}"
-                    )
+                        # Use centralized Multiwfn runner
+                        self.run_multiwfn(
+                            command=command,
+                            input_commands=commands,
+                            description=f"Monopole {charge_type} calculation for {f}"
+                        )
                     os.rename(f'{chg_prefix}.chg', file_path_monopole)
 
                 end = time.time()
@@ -883,3 +912,176 @@ class MultiwfnInterface:
                 atomicDicts.append(atomDict)
 
         return atomicDicts
+
+
+# ============================================================================
+# OpenBabel Charge Models
+# ============================================================================
+
+def get_openbabel_charges(xyz_path, charge_model='gasteiger', output_path=None):
+    """Calculate partial atomic charges using OpenBabel charge models.
+
+    This provides an alternative to Multiwfn for simpler charge models when
+    quantum chemistry-derived charges are not needed.
+
+    Parameters
+    ----------
+    xyz_path : str
+        Path to XYZ coordinate file (or other format OpenBabel can read).
+    charge_model : str, optional
+        Charge model to use. Options:
+        - 'gasteiger': Gasteiger-Marsili electronegativity equalization (default)
+        - 'mmff94': MMFF94 partial charges
+        - 'eem': Electronegativity Equalization Method
+        - 'qeq': Charge Equilibration method
+        - 'qtpie': QTPIE charges
+        - 'none': No charges (all zeros)
+    output_path : str or None, optional
+        If provided, write charges to file in Multiwfn-compatible format.
+        If None, only return the DataFrame (default: None).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns ['Atom', 'x', 'y', 'z', 'charge']
+        Compatible with pyEF charge file format.
+
+    Raises
+    ------
+    ImportError
+        If OpenBabel (openbabel) is not installed.
+    ValueError
+        If an unsupported charge model is specified.
+    FileNotFoundError
+        If the input XYZ file does not exist.
+
+    Examples
+    --------
+    >>> # Get Gasteiger charges
+    >>> charges_df = get_openbabel_charges('molecule.xyz')
+
+    >>> # Get MMFF94 charges and save to file
+    >>> charges_df = get_openbabel_charges('molecule.xyz', 'mmff94', 'charges.txt')
+
+    >>> # Use with Electrostatics for ESP calculation
+    >>> charges_df = get_openbabel_charges('molecule.xyz', 'gasteiger', 'ChargesGasteiger.txt')
+
+    Notes
+    -----
+    Supported charge models and their typical use cases:
+    - gasteiger: Fast, reasonable for organic molecules. Based on electronegativity.
+    - mmff94: Force field charges, good for drug-like molecules.
+    - eem: Similar to gasteiger but with different parameterization.
+    - qeq: Good for extended systems, metals.
+
+    The output format matches Multiwfn's charge file format:
+    Atom  x  y  z  charge
+    """
+    try:
+        import openbabel
+    except ImportError:
+        raise ImportError(
+            "OpenBabel is required for get_openbabel_charges(). "
+            "Install with: conda install -c conda-forge openbabel"
+        )
+
+    # Validate charge model
+    valid_models = ['gasteiger', 'mmff94', 'eem', 'qeq', 'qtpie', 'none']
+    charge_model_lower = charge_model.lower()
+    if charge_model_lower not in valid_models:
+        raise ValueError(
+            f"Unsupported charge model: '{charge_model}'. "
+            f"Valid options: {', '.join(valid_models)}"
+        )
+
+    # Check input file exists
+    if not os.path.exists(xyz_path):
+        raise FileNotFoundError(f"Input file not found: {xyz_path}")
+
+    # Determine input format from extension
+    ext = os.path.splitext(xyz_path)[1].lower()
+    format_map = {
+        '.xyz': 'xyz',
+        '.pdb': 'pdb',
+        '.mol': 'mol',
+        '.mol2': 'mol2',
+        '.sdf': 'sdf',
+    }
+    input_format = format_map.get(ext, 'xyz')
+
+    # Read molecule with OpenBabel
+    obConversion = openbabel.OBConversion()
+    obConversion.SetInFormat(input_format)
+    mol = openbabel.OBMol()
+
+    if not obConversion.ReadFile(mol, xyz_path):
+        raise ValueError(f"Failed to read file: {xyz_path}")
+
+    # Assign charges using the specified model
+    if charge_model_lower != 'none':
+        charge_model_obj = openbabel.OBChargeModel.FindType(charge_model_lower)
+        if charge_model_obj is None:
+            raise ValueError(
+                f"OpenBabel could not find charge model: '{charge_model}'. "
+                f"This model may not be available in your OpenBabel installation."
+            )
+        success = charge_model_obj.ComputeCharges(mol)
+        if not success:
+            warnings.warn(
+                f"Charge calculation with '{charge_model}' may have failed. "
+                "Charges may be zero or inaccurate.",
+                UserWarning
+            )
+
+    # Extract atom data
+    atoms = []
+    coords_x = []
+    coords_y = []
+    coords_z = []
+    charges = []
+
+    for atom in openbabel.OBMolAtomIter(mol):
+        # Get element symbol
+        atomic_num = atom.GetAtomicNum()
+        element = openbabel.GetSymbol(atomic_num)
+
+        atoms.append(element)
+        coords_x.append(atom.GetX())
+        coords_y.append(atom.GetY())
+        coords_z.append(atom.GetZ())
+        charges.append(atom.GetPartialCharge())
+
+    # Create DataFrame
+    df = pd.DataFrame({
+        'Atom': atoms,
+        'x': coords_x,
+        'y': coords_y,
+        'z': coords_z,
+        'charge': charges
+    })
+
+    # Write to file if output_path is specified
+    if output_path is not None:
+        df.to_csv(output_path, sep=' ', index=False, header=False)
+
+    return df
+
+
+def list_openbabel_charge_models():
+    """List available OpenBabel charge models.
+
+    Returns
+    -------
+    list of str
+        List of available charge model names.
+
+    Notes
+    -----
+    Common models include:
+    - gasteiger: Gasteiger-Marsili charges (fast, electronegativity-based)
+    - mmff94: MMFF94 force field charges
+    - eem: Electronegativity Equalization Method
+    - qeq: Charge Equilibration
+    - qtpie: QTPIE method
+    """
+    return ['gasteiger', 'mmff94', 'eem', 'qeq', 'qtpie', 'none']

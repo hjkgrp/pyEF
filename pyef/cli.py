@@ -372,7 +372,7 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
         incage_bool = False
         if any(filtered_metals):
             dataObject = Electrostatics(filtered_molden, filtered_xyz,
-                                      lst_of_tmcm_idx=filtered_metals,
+                                      esp_atom_idx=filtered_metals,
                                       incage_bool=incage_bool, dielectric=dielectric)
         else:
             dataObject = Electrostatics(filtered_molden, filtered_xyz,
