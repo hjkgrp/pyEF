@@ -77,7 +77,7 @@ es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
 #Record the indices (0-index) for the bonds to project Efield across. Here I have one bond: (0, 10) in structure 1 and two bonds: (20, 21) and (25, 26) in structure 2
 ef_bond = [[(0, 10)], [(20, 21), (25, 26)]
 
-#record indices of the substrate containins bonds of interest in structure 1, and structure 2
+#record indices of the substrate containing bonds of interest in structure 1, and structure 2
 sub_indices = [ np.arange(0,10), np.arange(10,25)]
 
 #exclude substrates from Efield calc (here we are only probing impact of environmnet on bond, NOT intramolecular polarization)
@@ -148,13 +148,16 @@ pyef -c config.yaml
 ```python
 from pyef.analysis import Electrostatics
 
-molden_paths = ['/path/to/structure.molden']
-xyz_paths = ['/path/to/structure.xyz']
+molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
 
 es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
-df = es.getElectrostatic_stabilization('/path/to/multiwfn',
-                                        substrate_idxs=[1, 2, 3, 4, 5],
-                                        multipole_order=2)
+
+#record indices of the substrate containins bonds of interest in structure 1, and structure 2
+sub_indices = [ np.arange(0,10), np.arange(10,25)]
+
+#only Hirshfeld, Hirshfeld_I, and Becke are compatible with multipole_order=2. Otherwise will default to multipole_order=1
+df = es.getElectrostatic_stabilization(charge_types='Hirshfeld', multiwfn_path='/path/to/multiwfn', substrate_idxs=sub_indices, multipole_order=2)
 ```
 
 ### Partial Charge Calculation
@@ -168,11 +171,8 @@ xyz_paths = ['/path/to/structure.xyz']
 
 es = Electrostatics(molden_paths, xyz_paths)
 
-# Get RESP charges for all atoms
-df = es.getCharges('RESP', '/path/to/multiwfn')
-
 # Get multiple charge types with PDB output for visualization
-df = es.getCharges(['RESP', 'Hirshfeld_I'], '/path/to/multiwfn',
+df = es.getCharges(charge_types =['RESP', 'Hirshfeld_I'], multiwfn_path='/path/to/multiwfn',
                    output_filename='my_charges', write_pdb=True)
 ```
 
