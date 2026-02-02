@@ -23,7 +23,7 @@ master_doc = 'index'
 # -- Project information -----------------------------------------------------
 
 project = "PyEF"
-copyright = '{}, <a href="https://kastner.io/en/">Melissa Manetsch and David W. Kastner</a>'.format(
+copyright = '{}, Melissa Manetsch and David W. Kastner'.format(
     datetime.datetime.now().year
 )
 author = "Melissa Manetsch and David W. Kastner"
@@ -98,7 +98,7 @@ templates_path = ["_templates"]
 html_theme = "revitron_sphinx_theme"
 html_theme_options = {
     "navigation_depth": 5,
-    "github_url": "https://github.com/davidkastner/pyef",
+    "github_url": "https://github.com/hjkgrp/pyEF",
     "color_scheme": "dark",
 }
 
