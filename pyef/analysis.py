@@ -2385,7 +2385,7 @@ Please verify the file exists or set the path to None for jobs without point cha
         print(f"Saved ESP results to: {output_filename}")
         return df
 
-    def getEfield(self, charge_types, Efielddata_filename, multiwfn_path,
+    def getEfield(self, charge_types='Hirshfeld_I', Efielddata_filename='ef', multiwfn_path=None,
                   multipole_bool=False, input_bond_indices=[], auto_find_bonds=False,
                   save_atomwise_decomposition=False, visualize=None, dielectric=1,
                   dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
@@ -2983,7 +2983,7 @@ Please verify the file exists or set the path to None for jobs without charges.
 
         return df
 
-    def getCharges(self, charge_types, multiwfn_path, output_filename='charges',
+    def getCharges(self, charge_types='Hirshfeld_I', multiwfn_path=None, output_filename='charges',
                    write_pdb=False, pdb_bfactor=True):
         """Compute partial charges for all atoms using specified charge partitioning scheme(s).
 
@@ -4158,8 +4158,8 @@ Please verify the file exists or set the path to None for jobs without charges.
 
         return np.array(M)
 
-    def getElectrostatic_stabilization(self, multiwfn_path,
-                                              substrate_idxs, charge_type='Hirshfeld_I',
+    def getElectrostatic_stabilization(self, multiwfn_path=None,
+                                              substrate_idxs=[], charge_type='Hirshfeld_I',
                                               name_dataStorage='estatic', env_idxs=None,
                                               save_atomwise_decomposition=False, visualize=None,
                                               multipole_order=2, substrate_multipole_order=None,
