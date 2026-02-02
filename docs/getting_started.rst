@@ -31,11 +31,38 @@ All atom indices in PyEF are **0-indexed**.
 Supported Charge Schemes
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Hirshfeld_I** (recommended): Iterative Hirshfeld, most accurate
-- **Hirshfeld**: Standard Hirshfeld partitioning
-- **CHELPG**: Fitted to electrostatic potential
-- **Mulliken**: Fast but basis-set dependent
-- **Other**: Becke, Lowdin, ADCH, MK, AIM, CM5, RESP, PEOE
+**Recommended:**
+
+- **Hirshfeld_I**: Iterative Hirshfeld - most accurate for most systems
+- **ADCH**: Atomic dipole corrected Hirshfeld - recommended by Multiwfn
+- **CM5**: Charge Model 5 - good balance of accuracy and speed
+
+**ESP-based methods:**
+
+- **RESP**: Restrained ESP fitting - standard for force field development
+- **CHELPG**: ESP fitting (Breneman) - good for molecular mechanics
+- **MK**: Merz-Kollmann ESP fitting - alternative ESP method
+
+**Population analysis:**
+
+- **Hirshfeld**: Standard Hirshfeld partitioning - fast, good for most systems
+- **Mulliken**: Mulliken population - fast but basis-set dependent
+- **Lowdin**: Löwdin population - uses orthogonalized basis
+- **Voronoi**: Voronoi deformation density - space partitioning method
+- **SCPA**: Ros & Schuit modified Mulliken scheme
+- **Becke**: Becke partitioning with atomic dipole correction
+
+**Methods with limitations:**
+
+- **EEM**: Electronegativity equalization method
+
+  - ⚠️ **Limitation**: Requires all atoms to be bonded. Fails for ionic systems
+    (e.g., systems with Na+, K+, or other isolated ions)
+
+- **PEOE**: Gasteiger (PEOE) charges
+
+  - ⚠️ **Limitation**: Missing parameters for some elements including Na, K,
+    and most transition metals. Will fail if your system contains unsupported elements
 
 Computing Partial Charges
 -------------------------

@@ -79,6 +79,66 @@ class MultiwfnInterface:
         'Becke': ['1', '2']
     }
 
+    @staticmethod
+    def get_monopole_commands(charge_type):
+        """
+        Get the Multiwfn command sequence for a given charge type.
+
+        This is the single source of truth for all Multiwfn monopole charge
+        calculation commands. Different charge types require different menu
+        navigation sequences in Multiwfn.
+
+        Parameters
+        ----------
+        charge_type : str
+            The charge partitioning scheme name
+
+        Returns
+        -------
+        list of str
+            Command sequence to send to Multiwfn stdin
+
+        Raises
+        ------
+        ValueError
+            If charge_type is 'AIM' (not supported in menu 7)
+        """
+        calc_command = MultiwfnInterface.CHARGE_SCHEMES.get(charge_type)
+
+        if charge_type == 'AIM':
+            raise ValueError(
+                "AIM charges cannot be calculated in population analysis module (menu 7). "
+                "Use basin analysis module (main menu 17) instead."
+            )
+        elif charge_type == 'Mulliken':
+            # Mulliken has a sub-menu that needs extra '0' to exit back to population menu
+            return ['7', '5', '1', 'y', '0', '0', 'q']
+        elif charge_type == 'Becke':
+            # Becke has sub-menu: 0=Start calculation
+            return ['7', '10', '0', 'y', '0', 'q']
+        elif charge_type == 'SCPA':
+            # SCPA directly calculates, no sub-menu
+            return ['7', '7', 'y', '0', 'q']
+        elif charge_type == 'Lowdin':
+            # Lowdin asks for output path (empty=screen), then y/n for .chg file
+            return ['7', '6', '', 'y', '0', 'q']
+        elif charge_type == 'EEM':
+            # EEM needs 'g' to guess bonds from molden, then 0=start calculation
+            return ['7', '17', 'g', '0', 'y', '0', 'q']
+        elif charge_type == 'PEOE':
+            # PEOE directly calculates (may fail for some elements like Na)
+            return ['7', '19', 'y', '0', 'q']
+        elif charge_type in ['CHELPG', 'RESP', 'MK']:
+            # ESP fitting methods have an extra menu level
+            return ['7', calc_command, '1', 'y', '0', '0', 'q']
+        elif charge_type == 'Hirshfeld_I':
+            # Hirshfeld_I: 1=start calculation (may need special handling for large basis)
+            return ['7', '15', '1', 'y', '0', 'q']
+        else:
+            # Default for Hirshfeld, Voronoi, ADCH, CM5:
+            # Sub-menu where option 1 = use built-in densities or output charges
+            return ['7', calc_command, '1', 'y', '0', 'q']
+
     def __init__(self, config=None):
         """
         Initialize the Multiwfn interface.
@@ -299,58 +359,86 @@ class MultiwfnInterface:
                         path_to_init_file = str(ini_path)
                         command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
 
-                    multiwfn_commands = ['15', '-1'] + self.dict_of_multipole[charge_type] + ['0', 'q']
-                    num_atoms = self.count_atoms(final_structure_file)
+                        multiwfn_commands = ['15', '-1'] + self.dict_of_multipole[charge_type] + ['0', 'q']
+                        num_atoms = self.count_atoms(final_structure_file)
 
-                    if charge_type == 'Hirshfeld_I':
-                        # Get the number of basis functions
-                        num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
+                        if charge_type == 'Hirshfeld_I':
+                            # Get the number of basis functions
+                            num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
 
-                        print(f'Current num of basis is: {num_basis}')
-                        print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
-                        if num_basis > self.config['maxIHirshFuzzyBasis']:
-                            print(f'Number of basis functions: {num_basis}')
-                            multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
-                            print(f'I-Hirshfeld command should be low memory and slow to accommodate large system')
+                            print(f'Current num of basis is: {num_basis}')
+                            print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
+                            if num_basis > self.config['maxIHirshFuzzyBasis']:
+                                print(f'Number of basis functions: {num_basis}')
+                                multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
+                                print(f'I-Hirshfeld command should be low memory and slow to accommodate large system')
 
-                    # Use centralized Multiwfn runner
-                    self.run_multiwfn(
-                        command=command,
-                        input_commands=multiwfn_commands,
-                        output_file=file_path_multipole,
-                        description=f"Multipole {charge_type} calculation for {f}"
-                    )
+                        # Use centralized Multiwfn runner
+                        self.run_multiwfn(
+                            command=command,
+                            input_commands=multiwfn_commands,
+                            output_file=file_path_multipole,
+                            description=f"Multipole {charge_type} calculation for {f}"
+                        )
 
                 else:
-                    command = f"{multiwfn_path} {molden_filename}"
-                    chg_prefix, _ = os.path.splitext(molden_filename)
-                    calc_command = self.dict_of_calcs[charge_type]
-                    commands = ['7', calc_command, '1', 'y', '0', 'q']  # for atomic charge type
+                    # Dynamically get path to package settings.ini file
+                    with resources.path('pyef.resources', 'settings.ini') as ini_path:
+                        path_to_init_file = str(ini_path)
+                        command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
+                        chg_prefix, _ = os.path.splitext(molden_filename)
+                        calc_command = self.dict_of_calcs[charge_type]
+                        # Default command for most charge types (Hirshfeld, Voronoi, ADCH, CM5)
+                        # These have sub-menu where option 1 = use built-in densities or output charges
+                        commands = ['7', calc_command, '1', 'y', '0', 'q']
 
-                    if charge_type == 'CHELPG':
-                        commands = ['7', calc_command, '1', '\n', 'y', '0', 'q']
-                    elif charge_type == 'Hirshfeld_I':
-                        num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
-                        print(f'Number of basis functions: {num_basis}')
-                        if num_basis > self.config['maxIHirshBasis']:
-                            commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
+                        if charge_type == 'Mulliken':
+                            # Mulliken has a sub-menu that needs extra '0' to exit back to population menu
+                            commands = ['7', '5', '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Becke':
+                            # Becke has sub-menu: 0=Start calculation
+                            commands = ['7', '10', '0', 'y', '0', 'q']
+                        elif charge_type == 'SCPA':
+                            # SCPA directly calculates, no sub-menu
+                            commands = ['7', '7', 'y', '0', 'q']
+                        elif charge_type == 'Lowdin':
+                            # Lowdin asks for output path (empty=screen), then y/n for .chg file
+                            commands = ['7', '6', '', 'y', '0', 'q']
+                        elif charge_type == 'EEM':
+                            # EEM needs 'g' to guess bonds from molden, then 0=start calculation
+                            commands = ['7', '17', 'g', '0', 'y', '0', 'q']
+                        elif charge_type == 'PEOE':
+                            # PEOE directly calculates (may fail for some elements like Na)
+                            commands = ['7', '19', 'y', '0', 'q']
+                        elif charge_type == 'AIM':
+                            # AIM is not available in menu 7 - needs basin analysis module
+                            print(f"WARNING: AIM charges cannot be calculated in population analysis module.")
+                            print(f"         Use basin analysis module (main menu 17) instead.")
+                            raise ValueError("AIM charge calculation not supported in this module")
+                        elif charge_type in ['CHELPG', 'RESP', 'MK']:
+                            commands = ['7', calc_command, '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Hirshfeld_I':
+                            num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
+                            print(f'Number of basis functions: {num_basis}')
+                            if num_basis > self.config['maxIHirshBasis']:
+                                commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
 
-                    # Use centralized Multiwfn runner
-                    self.run_multiwfn(
-                        command=command,
-                        input_commands=commands,
-                        description=f"Monopole {charge_type} calculation for {f}"
-                    )
+                        # Use centralized Multiwfn runner
+                        self.run_multiwfn(
+                            command=command,
+                            input_commands=commands,
+                            description=f"Monopole {charge_type} calculation for {f}"
+                        )
                     os.rename(f'{chg_prefix}.chg', file_path_monopole)
 
                 end = time.time()

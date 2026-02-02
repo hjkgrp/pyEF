@@ -29,6 +29,7 @@ import traceback
 import subprocess
 import math
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -66,7 +67,7 @@ class Electrostatics:
         Paths to .molden files, one per job (absolute or relative).
     xyz_paths : list of str
         Paths to .xyz files, one per job (absolute or relative).
-    lst_of_tmcm_idx : list of int
+    esp_atom_idx : list of int
         Atom indices for ESP evaluation (typically metal centers).
     config : dict
         Configuration dictionary containing:
@@ -105,11 +106,11 @@ class Electrostatics:
     >>> es = Electrostatics(molden_paths, xyz_paths, dielectric=2.0)
     >>>
     >>> # For ESP calculations (metal indices required)
-    >>> es_with_metals = Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx=[0, 0], dielectric=2.0)
+    >>> es_with_metals = Electrostatics(molden_paths, xyz_paths, esp_atom_idx=[0, 0], dielectric=2.0)
     >>> data = es_with_metals.getESP(['Hirshfeld', 'Hirshfeld_I'], 'esp_results', ...)
     """
 
-    def __init__(self, molden_paths, xyz_paths, lst_of_tmcm_idx=None,
+    def __init__(self, molden_paths, xyz_paths, esp_atom_idx=None,
                  ptchg_paths=None, **kwargs):
         """Initialize Electrostatics analysis object.
 
@@ -121,7 +122,7 @@ class Electrostatics:
         xyz_paths : list of str
             List of .xyz file paths for each job (absolute or relative).
             Example: ['/path/to/job1/optim.xyz', '/path/to/job2/optim.xyz']
-        lst_of_tmcm_idx : list of int, optional
+        esp_atom_idx : list of int, optional
             List of atom indices for ESP calculation (0-indexed).
             Only required when running ESP analysis. Not needed for E-field
             or electrostatic stabilization if bond indices are provided.
@@ -138,6 +139,20 @@ class Electrostatics:
         -----
         ECP options: "stuttgart_rsc", "def2", "crenbl", "lanl2dz", "lacvps"
         """
+        # Backward compatibility: accept old keyword lst_of_tmcm_idx
+        if 'lst_of_tmcm_idx' in kwargs:
+            warnings.warn(
+                "lst_of_tmcm_idx is deprecated, use esp_atom_idx instead",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            if esp_atom_idx is not None:
+                raise ValueError(
+                    "Cannot specify both esp_atom_idx and lst_of_tmcm_idx. "
+                    "Use esp_atom_idx (lst_of_tmcm_idx is deprecated)."
+                )
+            esp_atom_idx = kwargs.pop('lst_of_tmcm_idx')
+
         # Validate inputs
         # Type check: molden_paths and xyz_paths must be lists
         if not isinstance(molden_paths, list):
@@ -202,23 +217,23 @@ For more examples, see:
 {'='*60}
 """)
 
-        # Type check: lst_of_tmcm_idx must be list of integers if provided
-        if lst_of_tmcm_idx is not None:
+        # Type check: esp_atom_idx must be list of integers if provided
+        if esp_atom_idx is not None:
             # AUTO-CORRECT: Convert numpy arrays or other array-like objects to list
-            if hasattr(lst_of_tmcm_idx, '__iter__') and not isinstance(lst_of_tmcm_idx, (str, dict)):
+            if hasattr(esp_atom_idx, '__iter__') and not isinstance(esp_atom_idx, (str, dict)):
                 # This catches numpy arrays, tuples, sets, etc. but not strings or dicts
                 try:
-                    lst_of_tmcm_idx = list(lst_of_tmcm_idx)
+                    esp_atom_idx = list(esp_atom_idx)
                     # Successfully converted - continue with validation below
                 except (TypeError, ValueError):
                     pass  # If conversion fails, fall through to error handling
 
-            if not isinstance(lst_of_tmcm_idx, list):
+            if not isinstance(esp_atom_idx, list):
                 # ENHANCED: Detect previous API usage pattern
                 # Previous API: Electrostatics(folders, atoms, folder_to_file_path, molden_filename, xyzfilename)
-                # Current API: Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx)
+                # Current API: Electrostatics(molden_paths, xyz_paths, esp_atom_idx)
 
-                if isinstance(lst_of_tmcm_idx, str):
+                if isinstance(esp_atom_idx, str):
                     # Likely previous API: third argument was folder_to_file_path (string)
                     hint_msg = """
 
@@ -238,7 +253,7 @@ CURRENT API:
   estat = Electrostatics(
       molden_paths,              # List of COMPLETE paths to .molden files
       xyz_paths,                 # List of COMPLETE paths to .xyz files
-      lst_of_tmcm_idx=[25, 30]   # List of metal atom indices (optional)
+      esp_atom_idx=[25, 30]   # List of metal atom indices (optional)
   )
 
 Or if you have folders, construct paths like this:
@@ -254,16 +269,16 @@ Or if you have folders, construct paths like this:
 
                 raise TypeError(f"""
 {'='*60}
-ERROR: Invalid type for lst_of_tmcm_idx
+ERROR: Invalid type for esp_atom_idx
 {'='*60}
 Expected: list of integers
-Got: {type(lst_of_tmcm_idx).__name__}
+Got: {type(esp_atom_idx).__name__}
 
 Correct usage:
   estat = Electrostatics(
       molden_paths=['job1.molden', 'job2.molden'],
       xyz_paths=['job1.xyz', 'job2.xyz'],
-      lst_of_tmcm_idx=[25, 30]  # Metal atom indices (0-based)
+      esp_atom_idx=[25, 30]  # Metal atom indices (0-based)
   )
 
 For more examples, see:
@@ -272,17 +287,17 @@ For more examples, see:
 """)
 
             # Check all elements are integers
-            non_integers = [idx for idx in lst_of_tmcm_idx if not isinstance(idx, (int, np.integer))]
+            non_integers = [idx for idx in esp_atom_idx if not isinstance(idx, (int, np.integer))]
             if non_integers:
                 raise TypeError(f"""
 {'='*60}
-ERROR: Non-integer values in lst_of_tmcm_idx
+ERROR: Non-integer values in esp_atom_idx
 {'='*60}
 Expected: all elements must be integers
 Found non-integer values: {non_integers}
 
 Correct usage:
-  lst_of_tmcm_idx: [25, 30]  # Integers only
+  esp_atom_idx: [25, 30]  # Integers only
 
 For more examples, see:
 - /home/gridsan/mmanetsch/pyEF/pyef/ExampleUsage.py
@@ -351,7 +366,7 @@ For more examples, see:
         # Store file paths directly
         self.molden_paths = [os.path.abspath(p) for p in molden_paths]
         self.xyz_paths = [os.path.abspath(p) for p in xyz_paths]
-        self.lst_of_tmcm_idx = lst_of_tmcm_idx if lst_of_tmcm_idx is not None else []
+        self.esp_atom_idx = esp_atom_idx if esp_atom_idx is not None else []
 
         # Handle point charge paths with backward compatibility
         # Support 3 modes:
@@ -908,8 +923,8 @@ Correct usage:
             self.molden_paths = [self.molden_paths[i] for i in valid_indices]
             self.xyz_paths = [self.xyz_paths[i] for i in valid_indices]
             self.lst_of_folders = [self.lst_of_folders[i] for i in valid_indices]
-            if self.lst_of_tmcm_idx:
-                self.lst_of_tmcm_idx = [self.lst_of_tmcm_idx[i] for i in valid_indices]
+            if self.esp_atom_idx:
+                self.esp_atom_idx = [self.esp_atom_idx[i] for i in valid_indices]
 
         print(f'\n   > Validation complete: {len(valid_indices)} valid job(s) ready for processing')
 
@@ -2017,7 +2032,7 @@ Correct usage:
     # These unified methods replace the previous separate implementations
     # ============================================================================
 
-    def getESP(self, charge_types, ESPdata_filename, multiwfn_path,
+    def getESP(self, charge_types='CM5', ESPdata_filename='ESP', multiwfn_path='None',
                use_multipole=False, include_decay=False, include_coord_shells=False,
                visualize=None, dielectric=1, dielectric_scale=1, includePtChgs=None, ptchg_paths=None):
         """Unified ESP calculation method supporting multiple modes.
@@ -2092,6 +2107,17 @@ Correct usage:
         >>> # Decay analysis mode (replaces getESPDecay)
         >>> es.getESP(['Hirshfeld'], 'esp_decay', ..., include_decay=True, include_coord_shells=True)
         """
+        # Warn if multiwfn_path is not provided
+        if multiwfn_path is None or multiwfn_path == 'None':
+            warnings.warn(
+                "multiwfn_path is not set. Multiwfn is required for charge partitioning. "
+                "Consider using pyef.utility.get_openbabel_charges() as an alternative for "
+                "simpler charge models (Gasteiger, MMFF94, etc.). "
+                "Usage: from pyef.utility import get_openbabel_charges",
+                UserWarning,
+                stacklevel=2
+            )
+
         # Ensure charge_types is a list
         if isinstance(charge_types, str):
             charge_types = [charge_types]
@@ -2107,19 +2133,19 @@ Correct usage:
             return pd.DataFrame()
 
         # Validate that metal indices are provided for ESP calculation
-        if not self.lst_of_tmcm_idx:
+        if not self.esp_atom_idx:
             raise ValueError(f"""
 {'='*60}
 ERROR: ESP calculation requires metal atom indices
 {'='*60}
-Metal atom indices (lst_of_tmcm_idx) were not provided during
+Metal atom indices (esp_atom_idx) were not provided during
 initialization of the Electrostatics object.
 
 Correct usage:
   estat = Electrostatics(
       molden_paths=['job1.molden', 'job2.molden'],
       xyz_paths=['job1.xyz', 'job2.xyz'],
-      lst_of_tmcm_idx=[25, 30],  # Metal indices (0-indexed)
+      esp_atom_idx=[25, 30],  # Metal indices (0-indexed)
       dielectric=4.0
   )
   esp_df = estat.getESP(['Hirshfeld_I'], 'output', multiwfn_path)
@@ -2134,7 +2160,7 @@ For complete examples, see:
 
         self.config['dielectric'] = dielectric
         self.config['dielectric_scale'] = dielectric_scale
-        metal_idxs = self.lst_of_tmcm_idx
+        metal_idxs = self.esp_atom_idx
         list_of_file = self.lst_of_folders
         final_structure_file = self.config['xyzfilename']
         # Handle xyzfilename being a list (take first element)
@@ -2383,7 +2409,7 @@ Please verify the file exists or set the path to None for jobs without point cha
             If True, use multipole expansion; if False, use monopole charges (default: False).
         input_bond_indices : list, optional
             Bond indices as list of tuples [(atomA, atomB), ...].
-            If empty, bonds are auto-found using metal indices (lst_of_tmcm_idx).
+            If empty, bonds are auto-found using metal indices (esp_atom_idx).
             If provided, bonds are used as-is unless auto_find_bonds=True.
         auto_find_bonds : bool, optional
             If True, automatically find bonds to adjacent atoms using getBondedAtoms()
@@ -2481,7 +2507,7 @@ Please verify the file exists or set the path to None for jobs without point cha
 
         self.config['dielectric'] = dielectric
         self.config['dielectric_scale'] = dielectric_scale
-        metal_idxs = self.lst_of_tmcm_idx
+        metal_idxs = self.esp_atom_idx
         list_of_file = self.lst_of_folders
         final_structure_file = self.config['xyzfilename']
         # Handle xyzfilename being a list (take first element)
@@ -2526,20 +2552,20 @@ Please verify the file exists or set the path to None for jobs without point cha
                 # Determine bond indices
                 if auto_find_bonds or (not input_bond_indices):
                     # Auto-find bonded atoms (requires metal indices)
-                    if not self.lst_of_tmcm_idx:
+                    if not self.esp_atom_idx:
                         raise ValueError(f"""
 {'='*60}
 ERROR: Electric field calculation requires bond or metal indices
 {'='*60}
 You need to either:
-1. Provide metal indices (lst_of_tmcm_idx) for auto-finding bonds, OR
+1. Provide metal indices (esp_atom_idx) for auto-finding bonds, OR
 2. Specify bond indices explicitly via input_bond_indices parameter
 
 Option 1 - Auto-find bonds:
   estat = Electrostatics(
       molden_paths=['job1.molden'],
       xyz_paths=['job1.xyz'],
-      lst_of_tmcm_idx=[25]  # Metal atom index
+      esp_atom_idx=[25]  # Metal atom index
   )
   ef_df = estat.getEfield('Hirshfeld_I', 'output', multiwfn_path,
                           auto_find_bonds=True)
@@ -3220,57 +3246,86 @@ Please verify the file exists or set the path to None for jobs without charges.
                         path_to_init_file = str(ini_path)
                         command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
 
-                    multiwfn_commands = ['15', '-1'] + self.multiwfn.dict_of_multipole[charge_type] + ['0', 'q']
-                    num_atoms = Electrostatics.mapcount(final_structure_file) - 2
-                    if charge_type == 'Hirshfeld_I':
-                        #get the number of basis functions
-                        num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
+                        multiwfn_commands = ['15', '-1'] + self.multiwfn.dict_of_multipole[charge_type] + ['0', 'q']
+                        num_atoms = Electrostatics.mapcount(final_structure_file) - 2
+                        if charge_type == 'Hirshfeld_I':
+                            #get the number of basis functions
+                            num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
 
-                        print(f'Current num of basis is: {num_basis}')
-                        print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
-                        if  num_basis > self.config['maxIHirshFuzzyBasis']:
-                            print(f'Number of basis functions: {num_basis}')
-                            multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
-                            print(f'I-Hirshfeld command should be low memory and slow to accomodate large system')
+                            print(f'Current num of basis is: {num_basis}')
+                            print(f'The current max num is: {self.config["maxIHirshFuzzyBasis"]}')
+                            if  num_basis > self.config['maxIHirshFuzzyBasis']:
+                                print(f'Number of basis functions: {num_basis}')
+                                multiwfn_commands = ['15', '-1'] + ['4', '-2', '1', '2'] + ['0', 'q']
+                                print(f'I-Hirshfeld command should be low memory and slow to accomodate large system')
 
-                    # Use centralized Multiwfn runner
-                    self.multiwfn.run_multiwfn(
-                        command=command,
-                        input_commands=multiwfn_commands,
-                        output_file=file_path_multipole,
-                        description=f"Multipole {charge_type} calculation for {f}"
-                    )
+                        # Use centralized Multiwfn runner
+                        self.multiwfn.run_multiwfn(
+                            command=command,
+                            input_commands=multiwfn_commands,
+                            output_file=file_path_multipole,
+                            description=f"Multipole {charge_type} calculation for {f}"
+                        )
 
                 else:
-                    command = f"{multiwfn_path} {molden_filename}"
-                    chg_prefix,  _ = os.path.splitext(molden_filename)
-                    calc_command = self.multiwfn.dict_of_calcs[charge_type]
-                    commands = ['7', calc_command, '1', 'y', '0', 'q'] # for atomic charge type corresponding to dict key
-                    if charge_type == 'CHELPG':
-                        commands = ['7', calc_command, '1','\n', 'y', '0', 'q']
-                    elif charge_type == 'Hirshfeld_I':
-                        num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
-                        print(f'Number of basis functions: {num_basis}')
-                        if num_basis > self.config['maxIHirshBasis']:
-                            commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
+                    # Dynamically get path to package settings.ini file
+                    with resources.path('pyef.resources', 'settings.ini') as ini_path:
+                        path_to_init_file = str(ini_path)
+                        command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
+                        chg_prefix,  _ = os.path.splitext(molden_filename)
+                        calc_command = self.multiwfn.dict_of_calcs[charge_type]
+                        # Default command for most charge types (Hirshfeld, Voronoi, ADCH, CM5)
+                        # These have sub-menu where option 1 = use built-in densities or output charges
+                        commands = ['7', calc_command, '1', 'y', '0', 'q']
 
-                        # Use bundled atmrad from package resources
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
-                        #if too many atoms will need to change calc to run with reasonable memory
+                        if charge_type == 'Mulliken':
+                            # Mulliken has a sub-menu that needs extra '0' to exit back to population menu
+                            commands = ['7', '5', '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Becke':
+                            # Becke has sub-menu: 0=Start calculation
+                            commands = ['7', '10', '0', 'y', '0', 'q']
+                        elif charge_type == 'SCPA':
+                            # SCPA directly calculates, no sub-menu
+                            commands = ['7', '7', 'y', '0', 'q']
+                        elif charge_type == 'Lowdin':
+                            # Lowdin asks for output path (empty=screen), then y/n for .chg file
+                            commands = ['7', '6', '', 'y', '0', 'q']
+                        elif charge_type == 'EEM':
+                            # EEM needs 'g' to guess bonds from molden, then 0=start calculation
+                            commands = ['7', '17', 'g', '0', 'y', '0', 'q']
+                        elif charge_type == 'PEOE':
+                            # PEOE directly calculates (may fail for some elements like Na)
+                            commands = ['7', '19', 'y', '0', 'q']
+                        elif charge_type == 'AIM':
+                            # AIM is not available in menu 7 - needs basin analysis module
+                            print(f"WARNING: AIM charges cannot be calculated in population analysis module.")
+                            print(f"         Use basin analysis module (main menu 17) instead.")
+                            raise ValueError("AIM charge calculation not supported in this module")
+                        elif charge_type in ['CHELPG', 'RESP', 'MK']:
+                            commands = ['7', calc_command, '1', 'y', '0', '0', 'q']
+                        elif charge_type == 'Hirshfeld_I':
+                            num_basis = MoldenObject(file_path_xyz, molden_filename).countBasis()
+                            print(f'Number of basis functions: {num_basis}')
+                            if num_basis > self.config['maxIHirshBasis']:
+                                commands = ['7', '15', '-2', '1', '\n', 'y', '0', 'q']
 
-                    # Use centralized Multiwfn runner
-                    self.multiwfn.run_multiwfn(
-                        command=command,
-                        input_commands=commands,
-                        description=f"Monopole {charge_type} calculation for {f}"
-                    )
+                            # Use bundled atmrad from package resources
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                            #if too many atoms will need to change calc to run with reasonable memory
+
+                        # Use centralized Multiwfn runner
+                        self.multiwfn.run_multiwfn(
+                            command=command,
+                            input_commands=commands,
+                            description=f"Monopole {charge_type} calculation for {f}"
+                        )
                     os.rename(f'{chg_prefix}.chg', file_path_monopole)
                 end = time.time()
                 comp_cost = end - start
@@ -3455,49 +3510,52 @@ Please verify the file exists or set the path to None for jobs without charges.
             counter = counter + 1
             os.chdir(owd)
             os.chdir(f)
-            command_A = f"{multiwfn_path} {self.config['molden_filename']}"
-            results_dir = os.getcwd() + '/'
+            # Dynamically get path to package settings.ini file
+            with resources.path('pyef.resources', 'settings.ini') as ini_path:
+                path_to_init_file = str(ini_path)
+                command_A = f"{multiwfn_path} {self.config['molden_filename']} -set {path_to_init_file}"
+                results_dir = os.getcwd() + '/'
 
-            results_dict = {}
-            results_dict['Name'] = f
-           
+                results_dict = {}
+                results_dict['Name'] = f
 
-            for key in charge_types:
-                print('Partial Charge Scheme:' + str(key))
-                try:
-                    full_file_path = os.getcwd() +'/final_optim_' +key+'.txt'
-                    path_to_xyz = os.getcwd() + '/' + self.config['xyzfilename']
-                    if key == "Hirshfeld_I":
-                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
-                            atmrad_src = str(atmrad_resource)
-                        copy_tree(atmrad_src, results_dir + 'atmrad/')
+
+                for key in charge_types:
+                    print('Partial Charge Scheme:' + str(key))
                     try:
-                        for atom_idx in lst_atom_idxs:
-                            [atom_type, partial_charge_atom] = Electrostatics.getAtomInfo(full_file_path, atom_idx)
-                            results_dict[f'{key} Charge {atom_idx} {atom_type}'] = partial_charge_atom
+                        full_file_path = os.getcwd() +'/final_optim_' +key+'.txt'
+                        path_to_xyz = os.getcwd() + '/' + self.config['xyzfilename']
+                        if key == "Hirshfeld_I":
+                            with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                                atmrad_src = str(atmrad_resource)
+                                copy_tree(atmrad_src, results_dir + 'atmrad/')
+                        try:
+                            for atom_idx in lst_atom_idxs:
+                                [atom_type, partial_charge_atom] = Electrostatics.getAtomInfo(full_file_path, atom_idx)
+                                results_dict[f'{key} Charge {atom_idx} {atom_type}'] = partial_charge_atom
+                        except Exception as e:
+                            print('The Exception is: ' + str(e))
+                            print(traceback.format_exc())
+                            print('Error when trying to access electrostatic information: Attemtping to re-compute partial charges of type: ' + str(key))
+
+                            # Re-run multiwfn computation of partial charge
+                            proc = subprocess.Popen(command_A, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
+                            calc_command = self.multiwfn.dict_of_calcs[key]
+                            commands = ['7', calc_command, '1', 'y', '0', 'q'] # for atomic charge type corresponding to dict key
+                            if key in ['CHELPG', 'RESP', 'MK']:
+                                commands = ['7', calc_command, '1', 'y', '0', '0', 'q']
+                            output = proc.communicate("\n".join(commands).encode())
+                            new_name = 'final_optim_' +key+'.txt'
+                            os.rename('final_optim.chg', new_name)
+
+
+                            for atom_idx in lst_atom_idxs:
+                                [atom_type, partial_charge_atom] = Electrostatics.getAtomInfo(full_file_path, atom_idx)
+                                results_dict[f'{key} Charge {atom_idx} {atom_type}'] = partial_charge_atom
+
                     except Exception as e:
-                        print('The Exception is: ' + str(e))
-                        print(traceback.format_exc())
-                        print('Error when trying to access electrostatic information: Attemtping to re-compute partial charges of type: ' + str(key))
-
-                        # Re-run multiwfn computation of partial charge
-                        proc = subprocess.Popen(command_A, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
-                        calc_command = self.multiwfn.dict_of_calcs[key]
-                        commands = ['7', calc_command, '1', 'y', '0', 'q'] # for atomic charge type corresponding to dict key
-                        if key == 'CHELPG':
-                            commands = ['7', calc_command, '1','\n', 'y', '0', 'q']
-                        output = proc.communicate("\n".join(commands).encode())
-                        new_name = 'final_optim_' +key+'.txt'
-                        os.rename('final_optim.chg', new_name)
-
-
-                        for atom_idx in lst_atom_idxs:
-                            [atom_type, partial_charge_atom] = Electrostatics.getAtomInfo(full_file_path, atom_idx)
-                            results_dict[f'{key} Charge {atom_idx} {atom_type}'] = partial_charge_atom
-
-                except Exception as e:
-                    logging.exception('An Exception was thrown')
-                    continue
+                        logging.exception('An Exception was thrown')
+                        continue
             allspeciesdict.append(results_dict)
         os.chdir(owd)
         df = pd.DataFrame(allspeciesdict)
@@ -3633,16 +3691,16 @@ Please verify the file exists or set the path to None for jobs without charges.
                     with resources.path('pyef.resources', 'settings.ini') as ini_path:
                         path_to_ini_file = str(ini_path)
                         Command_Polarization = f"{multiwfn_path} {molden_filename} -set {path_to_ini_file} > {polarization_file}"
-                    command_A = f"{multiwfn_path} final_optim.molden"
-                    print('Atomic Multipole Calculation initialized')
-                    # Now Run the calculation for atomic dipole and quadrupole moment
-                    with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
+                        command_A = f"{multiwfn_path} final_optim.molden -set {path_to_ini_file}"
+                        print('Atomic Multipole Calculation initialized')
+                        # Now Run the calculation for atomic dipole and quadrupole moment
+                        with resources.path('pyef.resources', 'atmrad') as atmrad_resource:
                             atmrad_src = str(atmrad_resource)
-                    copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
-                    print(f"   > Submitting Multiwfn job using: {Command_Polarization}")
-                    proc = subprocess.Popen(Command_Polarization, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
-                    polarization_commands = ['15', '-1'] + self.multiwfn.dict_of_multipole[polarization_scheme] + ['0', 'q']
-                    proc.communicate("\n".join(polarization_commands).encode())
+                            copy_tree(atmrad_src, os.getcwd() + '/atmrad/')
+                        print(f"   > Submitting Multiwfn job using: {Command_Polarization}")
+                        proc = subprocess.Popen(Command_Polarization, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
+                        polarization_commands = ['15', '-1'] + self.multiwfn.dict_of_multipole[polarization_scheme] + ['0', 'q']
+                        proc.communicate("\n".join(polarization_commands).encode())
               
 
 
@@ -3695,8 +3753,8 @@ Please verify the file exists or set the path to None for jobs without charges.
                             proc = subprocess.Popen(command_A, stdin=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
                             calc_command = self.multiwfn.dict_of_calcs[key]
                             commands = ['7', calc_command, '1', 'y', '0', 'q'] # for atomic charge type corresponding to dict key
-                            if key == 'CHELPG':
-                                commands = ['7', calc_command, '1','\n', 'y', '0', 'q']
+                            if key in ['CHELPG', 'RESP', 'MK']:
+                                commands = ['7', calc_command, '1', 'y', '0', '0', 'q']
                             output = proc.communicate("\n".join(commands).encode())
                             new_name = 'final_optim_' +key+'.txt'
                             os.rename('final_optim.chg', new_name)

@@ -91,12 +91,13 @@ pyef -c config.yaml
 ```python
 from pyef.analysis import Electrostatics
 
-molden_paths = ['/path/to/structure.molden']
-xyz_paths = ['/path/to/structure.xyz']
-metal_indices = [30]  # 0-indexed
+molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
+# One atom index per file (0-indexed)
+metal_indices = [30, 0]  # atom 30 for structure1, atom 0 for structure2
 
-es = Electrostatics(molden_paths, xyz_paths, lst_of_tmcm_idx=metal_indices, dielectric=1.0)
-df = es.getESP(['Hirshfeld_I'], 'output', 'multiwfn', '/path/to/multiwfn')
+es = Electrostatics(molden_paths, xyz_paths, esp_atom_idx=metal_indices, dielectric=1.0)
+df = es.getESP(['Hirshfeld_I'], '/path/to/multiwfn')
 ```
 
 ### Electrostatic Stabilization Calculation
@@ -155,7 +156,24 @@ df = es.getCharges(['RESP', 'Hirshfeld_I'], '/path/to/multiwfn',
 
 **Output:** Returns a DataFrame with columns: `Job`, `Charge_Type`, `Atom_Index`, `Element`, `x`, `y`, `z`, `Charge`, `Molden_Path`, `XYZ_Path`.
 
-**Available charge types:** `RESP`, `Hirshfeld`, `Hirshfeld_I`, `CHELPG`, `Mulliken`, `Lowdin`, `SCPA`, `Becke`, `ADCH`, `Voronoi`, `MK`, `AIM`, `CM5`, `EEM`, `PEOE`
+**Available charge types:**
+
+| Charge Type | Description | Notes |
+|-------------|-------------|-------|
+| `Hirshfeld_I` | Iterative Hirshfeld | Recommended for most systems |
+| `Hirshfeld` | Standard Hirshfeld partitioning | Fast, good for most systems |
+| `RESP` | Restrained ESP fitting | Standard for force field development |
+| `CHELPG` | ESP fitting (Breneman) | Good for molecular mechanics |
+| `MK` | Merz-Kollmann ESP fitting | Alternative ESP method |
+| `CM5` | Charge Model 5 | Good balance of accuracy/speed |
+| `ADCH` | Atomic dipole corrected Hirshfeld | Recommended by Multiwfn |
+| `Mulliken` | Mulliken population | Fast but basis-set dependent |
+| `Lowdin` | Löwdin population | Orthogonalized basis |
+| `Voronoi` | Voronoi deformation density | Space partitioning method |
+| `SCPA` | Ros & Schuit modified Mulliken | Modified Mulliken scheme |
+| `Becke` | Becke partitioning with dipole correction | Real-space integration |
+| `EEM` | Electronegativity equalization | ⚠️ Requires bonded atoms (fails for ionic systems) |
+| `PEOE` | Gasteiger charges | ⚠️ Missing parameters for some elements (e.g., Na, transition metals)
 
 **PDB visualization:** When `write_pdb=True`, creates PDB files with charges in the B-factor column. Visualize in PyMOL with:
 ```
