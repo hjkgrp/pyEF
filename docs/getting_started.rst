@@ -1,22 +1,57 @@
 Getting Started
 ===============
 
+**Jump to:** `Installation`_ · `getCharges()`_ · `getEfield()`_ · `getESP()`_ · `getElectrostatic_stabilization()`_
+
+.. _getCharges(): `Computing Partial Charges`_
+.. _getEfield(): `Computing Electric Fields`_
+.. _getESP(): `Computing Electrostatic Potentials`_
+.. _getElectrostatic_stabilization(): `Computing Electrostatic Stabilization`_
+
 Installation
 ------------
 
 .. code-block:: bash
 
-   git clone git@github.com:davidkastner/pyEF.git
+   git clone git@github.com:hjkgrp/pyEF.git
    cd pyEF
-   ./install.sh
-
-This creates a conda environment with all dependencies and installs PyEF.
+   conda env create -f environment.yml
+   conda activate pyef
+   pip install -e .
 
 Requirements
 ~~~~~~~~~~~~
 
 - Python 3.8+
 - `Multiwfn <http://sobereva.com/multiwfn/>`_ (for charge calculations)
+
+Installing Multiwfn
+~~~~~~~~~~~~~~~~~~~
+
+PyEF requires `Multiwfn <http://sobereva.com/multiwfn/>`_ for charge partitioning and wavefunction analysis.
+
+.. note::
+   Currently Multiwfn is NOT supported on macOS. We recommend using a Linux or Windows system.
+
+**Download and compile:**
+
+.. code-block:: bash
+
+   # Download from http://sobereva.com/multiwfn/
+   wget http://sobereva.com/multiwfn/misc/Multiwfn_3.8_bin_Linux_noGUI.zip
+   unzip Multiwfn_3.8_bin_Linux_noGUI.zip
+   cd Multiwfn_3.8_bin_Linux_noGUI
+
+   # Give executable permission to the Multiwfn executable file
+   chmod +x Multiwfn_noGUI
+
+**Add to your PATH (add to ~/.bashrc):**
+
+.. code-block:: bash
+
+   export PATH=/path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI:$PATH
+
+Or use the full path when running PyEF (e.g., ``multiwfn_path: /path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI``).
 
 Core Concepts
 -------------
@@ -67,17 +102,38 @@ Supported Charge Schemes
 Computing Partial Charges
 -------------------------
 
-Partial charges are computed automatically when calculating electric fields or ESP.
-The charges are obtained via Multiwfn using your specified charge scheme.
+Compute partial charges for all atoms using specified charge partitioning scheme(s).
+Charges can optionally be written to PDB files for visualization.
+
+Python API
+~~~~~~~~~~
 
 .. code-block:: python
 
    from pyef.analysis import Electrostatics
 
-   es = Electrostatics(['structure.molden'], ['structure.xyz'])
+   molden_paths = ['/path/to/structure.molden']
+   xyz_paths = ['/path/to/structure.xyz']
 
-   # Charges are computed as part of E-field or ESP calculations
-   # and stored internally in the Electrostatics object
+   es = Electrostatics(molden_paths, xyz_paths)
+
+   # Get multiple charge types with PDB output for visualization
+   df = es.getCharges(
+       charge_types=['RESP', 'Hirshfeld_I'],
+       multiwfn_path='/path/to/multiwfn',
+       output_filename='my_charges',
+       write_pdb=True
+   )
+
+**Output:** Returns a DataFrame with columns: ``Job``, ``Charge_Type``, ``Atom_Index``,
+``Element``, ``x``, ``y``, ``z``, ``Charge``, ``Molden_Path``, ``XYZ_Path``.
+
+**PDB Visualization:** When ``write_pdb=True``, creates PDB files with charges in the
+B-factor column. Visualize in PyMOL with:
+
+.. code-block:: text
+
+   spectrum b, blue_white_red, minimum=-1, maximum=1
 
 Computing Electric Fields
 -------------------------
@@ -90,26 +146,36 @@ Python API
 .. code-block:: python
 
    from pyef.analysis import Electrostatics
+   import numpy as np
 
-   # Initialize with molden and xyz files
-   es = Electrostatics(
-       molden_paths=['job1/optim.molden', 'job2/optim.molden'],
-       xyz_paths=['job1/optim.xyz', 'job2/optim.xyz'],
-       dielectric=4.0  # optional: protein dielectric
-   )
+   molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+   xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
 
-   # Calculate E-field at bonds (atom indices are 0-indexed)
+   # Create an electrostatics object
+   es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
+
+   # Record the indices (0-indexed) for the bonds to project E-field across
+   # Here: one bond (0, 10) in structure 1 and two bonds (20, 21), (25, 26) in structure 2
+   ef_bond = [[(0, 10)], [(20, 21), (25, 26)]]
+
+   # Record indices of the substrate containing bonds of interest
+   sub_indices = [np.arange(0, 10), np.arange(10, 25)]
+
+   # Exclude substrates from E-field calc (only probe environment impact, not intramolecular)
+   es.setExcludeAtomFromCalc(sub_indices)
+
+   # Calculate E-field (charge_types can be a list or single value)
    df = es.getEfield(
        charge_types='Hirshfeld_I',
-       Efielddata_filename='efield_results',
+       Efielddata_filename='output',
        multiwfn_path='/path/to/multiwfn',
-       input_bond_indices=[(25, 26), (25, 27)]  # bonds to analyze
+       input_bond_indices=ef_bond
    )
 
 **Key parameters:**
 
-- ``charge_types``: Charge scheme ('Hirshfeld_I', 'CHELPG', etc.)
-- ``input_bond_indices``: List of (atom1, atom2) tuples defining bonds
+- ``charge_types``: Charge scheme ('Hirshfeld_I', 'CHELPG', etc.) - can be string or list
+- ``input_bond_indices``: List of (atom1, atom2) tuples defining bonds per structure
 - ``multipole_bool``: Use multipole expansion (default: False)
 - ``dielectric``: Dielectric constant (1=vacuum, 4=protein, 78.5=water)
 
@@ -150,23 +216,25 @@ Python API
 
    from pyef.analysis import Electrostatics
 
-   # Initialize with metal center index (0-indexed)
-   es = Electrostatics(
-       molden_paths=['optim.molden'],
-       xyz_paths=['optim.xyz'],
-       lst_of_tmcm_idx=[30]  # metal atom index
-   )
+   molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+   xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
 
-   # Calculate ESP
+   # One atom index per file (0-indexed)
+   metal_indices = [30, 0]  # atom 30 for structure1, atom 0 for structure2
+
+   # Create an electrostatics object with esp_atom_idx
+   es = Electrostatics(molden_paths, xyz_paths, esp_atom_idx=metal_indices, dielectric=1.0)
+
+   # Run electrostatic potential calculations
    df = es.getESP(
-       charge_types='Hirshfeld_I',
+       charge_types=['Hirshfeld_I'],
        ESPdata_filename='esp_results',
        multiwfn_path='/path/to/multiwfn'
    )
 
 **Key parameters:**
 
-- ``lst_of_tmcm_idx``: Metal atom indices where ESP is calculated (set at initialization)
+- ``esp_atom_idx``: Atom indices where ESP is calculated (set at initialization, 0-indexed)
 - ``charge_types``: Charge scheme
 - ``use_multipole``: Use multipole expansion (default: False)
 - ``dielectric``: Dielectric constant
@@ -185,6 +253,70 @@ Run with config:
 .. code-block:: bash
 
    pyef -c config.yaml
+
+Computing Electrostatic Stabilization
+-------------------------------------
+
+Calculate electrostatic stabilization energy between substrate and environment.
+
+CLI
+~~~
+
+Create a jobs file:
+
+.. code-block:: text
+
+   estab, /path/to/structure.molden, /path/to/structure.xyz
+
+Create a config file (``config.yaml``):
+
+.. code-block:: yaml
+
+   input: jobs.csv
+   dielectric: 1
+   multiwfn_path: /path/to/multiwfn
+   charge_types:
+     - Hirshfeld_I
+   multipole_order: 2
+   substrate_idxs: [1, 2, 3, 4, 5]
+
+Run:
+
+.. code-block:: bash
+
+   pyef -c config.yaml
+
+Python API
+~~~~~~~~~~
+
+.. code-block:: python
+
+   from pyef.analysis import Electrostatics
+   import numpy as np
+
+   molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
+   xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
+
+   es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
+
+   # Record indices of the substrate in structure 1 and structure 2
+   sub_indices = [np.arange(0, 10), np.arange(10, 25)]
+
+   # Only Hirshfeld, Hirshfeld_I, and Becke are compatible with multipole_order=2
+   # Otherwise will default to multipole_order=1
+   df = es.getElectrostatic_stabilization(
+       charge_types='Hirshfeld',
+       multiwfn_path='/path/to/multiwfn',
+       substrate_idxs=sub_indices,
+       multipole_order=2
+   )
+
+**Key parameters:**
+
+- ``substrate_idxs``: List of atom indices for the substrate (one per structure)
+- ``charge_types``: Charge scheme (Hirshfeld, Hirshfeld_I, or Becke for multipole_order=2)
+- ``multipole_order``: 1 for monopole, 2 for dipole corrections
+- ``dielectric``: Dielectric constant
 
 Dielectric Constants
 --------------------
