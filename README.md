@@ -93,11 +93,21 @@ from pyef.analysis import Electrostatics
 
 molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
 xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
+
 # One atom index per file (0-indexed)
 metal_indices = [30, 0]  # atom 30 for structure1, atom 0 for structure2
 
+#name for csv data file that will record ESP data
+fn='espHirshfeldI'
+
+#pathway to the installation of the multiwfn install
+multiwfn_install = '/path/to/multiwfn'
+
+#create an electrostatics object
 es = Electrostatics(molden_paths, xyz_paths, esp_atom_idx=metal_indices, dielectric=1.0)
-df = es.getESP(['Hirshfeld_I'], '/path/to/multiwfn')
+
+#run electrostatic potential calculations on  all files in list
+df = es.getESP(charge_types=['Hirshfeld_I'], ESPdata_filename=fn, multiwfn_path=multiwfn_install)
 ```
 
 ### Electrostatic Stabilization Calculation
