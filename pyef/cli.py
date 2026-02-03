@@ -330,12 +330,6 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
         Can be either:
         - Flat list [0, 1, 2] for same exclusions across all jobs
         - Nested list [[0, 1], [2, 3], []] for different exclusions per job
-
-    Notes
-    -----
-    - ESP calculation for ~400 atom system takes about 15 minutes on one node
-    - E-field calculation for ~400 atom system takes ~1 hour on one node
-    - If jobs end abruptly, delete the polarization file before restarting
     """
     from pyef.analysis import Electrostatics
     from collections import defaultdict
