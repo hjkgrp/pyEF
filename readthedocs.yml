@@ -15,7 +15,7 @@ build:
       - pip install --upgrade pip setuptools wheel
     post_install:
       # Verify installation
-      - python -c "import pyef; print('PyEF version:', pyef.__version__)"
+      - python -c "import pyef; print(pyef.__version__)"
       - pip list
 
 # Conda environment with documentation dependencies
