@@ -110,18 +110,20 @@ class Electrostatics:
     >>> data = es_with_metals.getESP(['Hirshfeld', 'Hirshfeld_I'], 'esp_results', ...)
     """
 
-    def __init__(self, molden_paths, xyz_paths, esp_atom_idx=None,
-                 ptchg_paths=None, **kwargs):
+    def __init__(self, molden_paths=None, xyz_paths=None, esp_atom_idx=None,
+                 ptchg_paths=None, pdb_charge_paths=None, **kwargs):
         """Initialize Electrostatics analysis object.
 
         Parameters
         ----------
-        molden_paths : list of str
+        molden_paths : list of str or None
             List of .molden file paths for each job (absolute or relative).
             Example: ['/path/to/job1/optim.molden', '/path/to/job2/optim.molden']
-        xyz_paths : list of str
+            Not required when pdb_charge_paths is provided (pdb_only mode).
+        xyz_paths : list of str or None
             List of .xyz file paths for each job (absolute or relative).
             Example: ['/path/to/job1/optim.xyz', '/path/to/job2/optim.xyz']
+            Not required when pdb_charge_paths is provided (pdb_only mode).
         esp_atom_idx : list of int, optional
             List of atom indices for ESP calculation (0-indexed).
             Only required when running ESP analysis. Not needed for E-field
@@ -131,6 +133,12 @@ class Electrostatics:
             Use None for jobs without point charges.
             Example: ['/path/to/job1/ptchg.txt', None, '/path/to/job3/ptchg.txt']
             If not provided, can use includePtChgs() or ptChgfp config for compatibility.
+        pdb_charge_paths : list of str or None, optional
+            List of PDB file paths whose B-factor column contains partial charges,
+            one per job. When provided, molden_paths and xyz_paths are not required
+            and Multiwfn is never called (pdb_only mode). Coordinates and charges
+            are read entirely from these PDB files.
+            Example: ['/path/to/job1/charges.pdb', '/path/to/job2/charges.pdb']
         **kwargs : dict, optional
             Configuration options to override defaults. See class docstring
             for available configuration keys.
@@ -138,6 +146,10 @@ class Electrostatics:
         Notes
         -----
         ECP options: "stuttgart_rsc", "def2", "crenbl", "lanl2dz", "lacvps"
+
+        pdb_only mode: Pass pdb_charge_paths and omit (or pass None for) molden_paths
+        and xyz_paths. All three calculation functions (getESP, getEfield,
+        getElectrostatic_stabilization) will use the PDB charges directly.
         """
         # Backward compatibility: accept old keyword lst_of_tmcm_idx
         if 'lst_of_tmcm_idx' in kwargs:
@@ -153,10 +165,14 @@ class Electrostatics:
                 )
             esp_atom_idx = kwargs.pop('lst_of_tmcm_idx')
 
-        # Validate inputs
-        # Type check: molden_paths and xyz_paths must be lists
-        if not isinstance(molden_paths, list):
-            raise TypeError(f"""
+        # Detect pdb_only mode: pdb_charge_paths provided without molden/xyz
+        _pdb_only = pdb_charge_paths is not None and molden_paths is None and xyz_paths is None
+
+        # Validate inputs (skip for pdb_only mode)
+        if not _pdb_only:
+            # Type check: molden_paths and xyz_paths must be lists
+            if not isinstance(molden_paths, list):
+                raise TypeError(f"""
 {'='*60}
 ERROR: Invalid type for molden_paths
 {'='*60}
@@ -169,14 +185,20 @@ Correct usage:
       xyz_paths=['job1.xyz', 'job2.xyz']
   )
 
+For pdb_only mode (no Multiwfn required):
+  estat = Electrostatics(
+      pdb_charge_paths=['job1.pdb', 'job2.pdb'],
+      esp_atom_idx=[25, 30]
+  )
+
 For more examples, see:
 - /home/gridsan/mmanetsch/pyEF/pyef/ExampleUsage.py
 - README.md: Section 3 (Detailed Tutorials)
 {'='*60}
 """)
 
-        if not isinstance(xyz_paths, list):
-            raise TypeError(f"""
+            if not isinstance(xyz_paths, list):
+                raise TypeError(f"""
 {'='*60}
 ERROR: Invalid type for xyz_paths
 {'='*60}
@@ -195,9 +217,9 @@ For more examples, see:
 {'='*60}
 """)
 
-        # Length check
-        if len(molden_paths) != len(xyz_paths):
-            raise ValueError(f"""
+            # Length check
+            if len(molden_paths) != len(xyz_paths):
+                raise ValueError(f"""
 {'='*60}
 ERROR: Mismatched list lengths
 {'='*60}
@@ -364,8 +386,14 @@ For more examples, see:
                 validate_charge_type(charge_type, context="Electrostatics initialization")
 
         # Store file paths directly
-        self.molden_paths = [os.path.abspath(p) for p in molden_paths]
-        self.xyz_paths = [os.path.abspath(p) for p in xyz_paths]
+        if _pdb_only:
+            # pdb_only mode: molden/xyz are not used; store None sentinels
+            n_jobs = len(pdb_charge_paths)
+            self.molden_paths = [None] * n_jobs
+            self.xyz_paths = [None] * n_jobs
+        else:
+            self.molden_paths = [os.path.abspath(p) for p in molden_paths]
+            self.xyz_paths = [os.path.abspath(p) for p in xyz_paths]
         self.esp_atom_idx = esp_atom_idx if esp_atom_idx is not None else []
 
         # Handle point charge paths with backward compatibility
@@ -433,8 +461,16 @@ Correct usage:
             # No point charges specified
             self.ptchg_paths = None
 
-        # Create list of working directories (one per job) from the molden file paths
-        self.lst_of_folders = [os.path.dirname(p) for p in self.molden_paths]
+        # Store pdb_only mode flag and PDB paths
+        self.pdb_only = _pdb_only
+        if _pdb_only:
+            self.pdb_charge_paths = [os.path.abspath(p) for p in pdb_charge_paths]
+            # Working directories come from PDB file locations
+            self.lst_of_folders = [os.path.dirname(p) for p in self.pdb_charge_paths]
+        else:
+            self.pdb_charge_paths = None
+            # Create list of working directories (one per job) from the molden file paths
+            self.lst_of_folders = [os.path.dirname(p) for p in self.molden_paths]
         self.folder_to_file_path = ''  # No longer needed, but kept for compatibility
 
         # Initialize Multiwfn interface with current config
@@ -448,12 +484,14 @@ Correct usage:
         self.periodic_table = constants.PERIODIC_TABLE
         self.amassdict = constants.ATOMIC_MASS_DICT
 
-        # Prepare data files (extract final frames, check file existence)
-        self.prepData()
-
-        # Fix molden files if ECP was used in calculations
-        if self.config['hasECP']:
-            self.fix_allECPmolden()
+        # Prepare data files (validate file existence)
+        if self.pdb_only:
+            self.prepData_pdb()
+        else:
+            self.prepData()
+            # Fix molden files if ECP was used in calculations
+            if self.config['hasECP']:
+                self.fix_allECPmolden()
 
     # =========================================================================
     # Validation Methods
@@ -928,6 +966,43 @@ Correct usage:
 
         print(f'\n   > Validation complete: {len(valid_indices)} valid job(s) ready for processing')
 
+    def prepData_pdb(self):
+        """Validate PDB charge files for pdb_only mode.
+
+        Checks that all PDB files provided during initialization exist.
+        Removes invalid entries from processing lists.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no valid PDB charge files are found.
+        """
+        print('   > Validating PDB charge file paths (pdb_only mode)')
+
+        valid_indices = []
+        for idx, pdb_path in enumerate(self.pdb_charge_paths):
+            if not os.path.exists(pdb_path):
+                print(f'ERROR: PDB charge file not found: {pdb_path}')
+                continue
+            print(f'      ✓ Job {idx+1}: Found PDB charge file')
+            print(f'         - PDB: {pdb_path}')
+            valid_indices.append(idx)
+
+        if len(valid_indices) == 0:
+            raise FileNotFoundError("No valid PDB charge files found!")
+
+        if len(valid_indices) < len(self.pdb_charge_paths):
+            print(f'\nWARNING: Only {len(valid_indices)}/{len(self.pdb_charge_paths)} jobs have valid PDB files.')
+            print('         Invalid jobs will be removed from processing.')
+            self.pdb_charge_paths = [self.pdb_charge_paths[i] for i in valid_indices]
+            self.molden_paths = [self.molden_paths[i] for i in valid_indices]
+            self.xyz_paths = [self.xyz_paths[i] for i in valid_indices]
+            self.lst_of_folders = [self.lst_of_folders[i] for i in valid_indices]
+            if self.esp_atom_idx:
+                self.esp_atom_idx = [self.esp_atom_idx[i] for i in valid_indices]
+
+        print(f'\n   > Validation complete: {len(valid_indices)} valid pdb_only job(s) ready for processing')
+
     # =========================================================================
     # Multipole and Charge Parsing Methods
     # =========================================================================
@@ -1194,6 +1269,51 @@ Correct usage:
         final_esp = constants.COULOMB_CONSTANT*total_esp*constants.ELEMENTARY_CHARGE  #N*m^2/(C^2)*(C/m) = N*m/C = J/C = Volt
         return [final_esp, df['Atom'][idx_atom]]
 
+    def monopole_esp_df(self, df_charges, espatom_idx, charge_range):
+        """Calculate ESP at a specified atom using charges from a DataFrame.
+
+        This is the pdb_only equivalent of monopole_esp(): it reads directly
+        from a DataFrame (e.g. produced by getPdbCharges) instead of a file.
+        The changeDielectBoundBool feature is not supported in this mode because
+        bond detection requires an XYZ file.
+
+        Parameters
+        ----------
+        df_charges : pd.DataFrame
+            DataFrame with columns ['Atom', 'x', 'y', 'z', 'charge'].
+            Typically returned by getPdbCharges().
+        espatom_idx : int
+            Atom index (0-indexed) at which the ESP is calculated.
+        charge_range : list of int
+            Indices of atoms to include in the ESP sum.
+
+        Returns
+        -------
+        list
+            [ESP (float in Volts), atom_symbol (str)]
+        """
+        dielectric = self.config['dielectric']
+        df = df_charges.reset_index(drop=True)
+        atoms = list(df['Atom'])
+        charges = list(df['charge'])
+        xs = list(df['x'])
+        ys = list(df['y'])
+        zs = list(df['z'])
+
+        idx_atom = espatom_idx
+        xo, yo, zo = xs[idx_atom], ys[idx_atom], zs[idx_atom]
+        total_esp = 0
+
+        for idx in charge_range:
+            if idx == idx_atom:
+                continue
+            r = (((xs[idx] - xo) * constants.ANGSTROM_TO_M)**2 +
+                 ((ys[idx] - yo) * constants.ANGSTROM_TO_M)**2 +
+                 ((zs[idx] - zo) * constants.ANGSTROM_TO_M)**2) ** 0.5
+            total_esp += (1 / dielectric) * (charges[idx] / r)
+
+        final_esp = constants.COULOMB_CONSTANT * total_esp * constants.ELEMENTARY_CHARGE
+        return [final_esp, atoms[idx_atom]]
 
     def calc_firstTermE(espatom_idx, charge_range, charge_file):
         '''
@@ -1651,7 +1771,13 @@ Correct usage:
         bond_dipoles = []
 
         # Get geometry information
-        df_geom = Geometry(xyz_filepath).getGeomInfo()
+        # In pdb_only mode xyz_filepath is None; use coordinates already in charge_df.
+        if xyz_filepath is None and charge_df is not None:
+            df_geom = charge_df[['x', 'y', 'z']].rename(
+                columns={'x': 'X', 'y': 'Y', 'z': 'Z'}
+            ).reset_index(drop=True)
+        else:
+            df_geom = Geometry(xyz_filepath).getGeomInfo()
 
         # Get charge information
         if charge_df is not None:
@@ -2034,7 +2160,8 @@ Correct usage:
 
     def getESP(self, charge_types='CM5', ESPdata_filename='ESP', multiwfn_path='None',
                use_multipole=False, include_decay=False, include_coord_shells=False,
-               visualize=None, dielectric=1, dielectric_scale=1, includePtChgs=None, ptchg_paths=None):
+               visualize=None, dielectric=1, dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
+               pdb_charge_paths=None):
         """Unified ESP calculation method supporting multiple modes.
 
         This consolidated method replaces getESPData(), getESPMultipole(), and getESPDecay()
@@ -2073,6 +2200,11 @@ Correct usage:
             Override point charge file paths for this calculation.
             List of paths (one per job), with None for jobs without point charges.
             If provided, takes precedence over object-level settings (default: None).
+        pdb_charge_paths : str or list of str or None, optional
+            If provided, use partial charges from PDB B-factor columns only (no Multiwfn).
+            Can be a single PDB path or a list of paths (one per job), with None to skip a job.
+            Overrides the object-level pdb_charge_paths if the object was created in pdb_only mode.
+            This mode supports monopole charges only (use_multipole must be False).
 
         Returns
         -------
@@ -2106,9 +2238,20 @@ Correct usage:
 
         >>> # Decay analysis mode (replaces getESPDecay)
         >>> es.getESP(['Hirshfeld'], 'esp_decay', ..., include_decay=True, include_coord_shells=True)
+
+        >>> # pdb_only mode (no Multiwfn required)
+        >>> es.getESP(pdb_charge_paths=['job1.pdb', 'job2.pdb'])
         """
-        # Warn if multiwfn_path is not provided
-        if multiwfn_path is None or multiwfn_path == 'None':
+        # Resolve pdb_charge_paths: function-level arg takes priority, else use object-level
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        use_pdb_charges = pdb_charge_paths is not None
+
+        if use_pdb_charges and use_multipole:
+            raise ValueError("pdb_only mode supports monopole charges only. Set use_multipole=False.")
+
+        # Warn if multiwfn_path is not provided (skip warning in pdb_only mode)
+        if not use_pdb_charges and (multiwfn_path is None or multiwfn_path == 'None'):
             warnings.warn(
                 "multiwfn_path is not set. Multiwfn is required for charge partitioning. "
                 "Consider using pyef.utility.get_openbabel_charges() as an alternative for "
@@ -2186,10 +2329,29 @@ For complete examples, see:
             results_dict['Name'] = f
             # Use stored absolute path instead of constructing it
             file_path_xyz = self.xyz_paths[counter]
+
+            # pdb_only: resolve and load PDB charges for this job
+            df_pdb_charges = None
+            if use_pdb_charges:
+                if isinstance(pdb_charge_paths, list):
+                    pdb_charge_path = pdb_charge_paths[counter] if counter < len(pdb_charge_paths) else None
+                else:
+                    pdb_charge_path = pdb_charge_paths
+                if pdb_charge_path is None:
+                    print(f"Warning: No PDB charge file for job {counter}, skipping")
+                    counter += 1
+                    continue
+                pdb_charge_path = os.path.abspath(pdb_charge_path)
+                if not os.path.exists(pdb_charge_path):
+                    raise FileNotFoundError(f"PDB charge file not found: {pdb_charge_path}")
+                df_pdb_charges = self.getPdbCharges(pdb_charge_path)
+                n_atoms = len(df_pdb_charges)
+                all_lines = [x for x in range(n_atoms) if x not in self.config['excludeAtomfromEcalc']]
+
             counter += 1
 
-            # Calculate total lines for monopole calculations
-            if not use_multipole or include_decay:
+            # Calculate total lines for monopole calculations (standard mode)
+            if not use_pdb_charges and (not use_multipole or include_decay):
                 total_lines = Electrostatics.mapcount(file_path_xyz)
                 init_all_lines = range(0, total_lines - 2)
                 all_lines = [x for x in init_all_lines if x not in self.config['excludeAtomfromEcalc']]
@@ -2201,11 +2363,15 @@ For complete examples, see:
                     file_path_multipole = f"{f}/Multipole{charge_type}.txt"
                     file_path_monopole = f"{f}/Charges{charge_type}.txt"
 
-                    # Check if required files exist when skip_missing_files is enabled
-                    if self.config.get('skip_missing_files', False):
-                        required_file = file_path_multipole if use_multipole else file_path_monopole
-                        if not os.path.exists(required_file):
-                            print(f"""
+                    if use_pdb_charges:
+                        # pdb_only: skip partitionCharge entirely
+                        pass
+                    else:
+                        # Check if required files exist when skip_missing_files is enabled
+                        if self.config.get('skip_missing_files', False):
+                            required_file = file_path_multipole if use_multipole else file_path_monopole
+                            if not os.path.exists(required_file):
+                                print(f"""
 {'='*60}
 WARNING: Required charge file not found - skipping this calculation
 {'='*60}
@@ -2216,25 +2382,25 @@ Charge type: {charge_type}
 Skipping to next charge type (skip_missing_files=True)
 {'='*60}
 """)
+                                continue
+
+                        # Use centralized partitionCharge() to get/compute charges
+                        # Extract actual filenames from paths
+                        molden_filename = os.path.basename(self.molden_paths[counter-1])
+                        xyz_filename = os.path.basename(self.xyz_paths[counter-1])
+                        comp_cost = self.multiwfn.partitionCharge(
+                            multipole_bool=use_multipole,
+                            f=f,
+                            multiwfn_path=multiwfn_path,
+                            charge_type=charge_type,
+                            owd=owd,
+                            molden_filename=molden_filename,
+                            xyz_filename=xyz_filename
+                        )
+
+                        if comp_cost == -1:
+                            print(f"WARNING: Charge calculation failed for {charge_type} in {f}")
                             continue
-
-                    # Use centralized partitionCharge() to get/compute charges
-                    # Extract actual filenames from paths
-                    molden_filename = os.path.basename(self.molden_paths[counter-1])
-                    xyz_filename = os.path.basename(self.xyz_paths[counter-1])
-                    comp_cost = self.multiwfn.partitionCharge(
-                        multipole_bool=use_multipole,
-                        f=f,
-                        multiwfn_path=multiwfn_path,
-                        charge_type=charge_type,
-                        owd=owd,
-                        molden_filename=molden_filename,
-                        xyz_filename=xyz_filename
-                    )
-
-                    if comp_cost == -1:
-                        print(f"WARNING: Charge calculation failed for {charge_type} in {f}")
-                        continue
                     path_to_xyz = file_path_xyz
 
                     # Get point charge path for this job
@@ -2283,7 +2449,19 @@ Please verify the file exists or set the path to None for jobs without point cha
 """)
 
                     # Calculate ESP using appropriate method
-                    if use_multipole:
+                    if use_pdb_charges:
+                        # pdb_only: compute ESP directly from the PDB charge DataFrame
+                        [ESP_all, atom_type] = self.monopole_esp_df(
+                            df_pdb_charges, atom_idx, all_lines
+                        )
+                        df_pdb_reset = df_pdb_charges.reset_index(drop=True)
+                        total_charge = df_pdb_reset['charge'].sum()
+                        partial_charge_atom = df_pdb_reset['charge'].iloc[atom_idx]
+                        results_dict['Atoms'] = atom_type
+                        results_dict['Total Charge'] = total_charge
+                        results_dict[f'Partial Charge pdb'] = partial_charge_atom
+                        results_dict[f'ESP pdb'] = ESP_all
+                    elif use_multipole:
                         [final_esp, atom_name] = self.multipole_esp(
                             file_path_xyz, file_path_multipole, all_lines, atom_idx, ptchg_path=ptchg_path
                         )
@@ -2477,6 +2655,9 @@ Please verify the file exists or set the path to None for jobs without point cha
         >>> # Monopole mode with atom-wise decomposition
         >>> es.getEfield('Hirshfeld', 'efield', ..., multipole_bool=False, save_atomwise_decomposition=True)
         """
+        # Resolve pdb_charge_paths: function-level arg takes priority, else use object-level
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
         use_pdb_charges = pdb_charge_paths is not None
 
         if use_pdb_charges and multipole_bool:
@@ -2536,8 +2717,15 @@ Please verify the file exists or set the path to None for jobs without point cha
                 results_dict = {}
                 # Use stored absolute path instead of constructing it
                 file_path_xyz = self.xyz_paths[counter]
-                total_lines = Electrostatics.mapcount(file_path_xyz)
-                init_all_lines = range(0, total_lines - 2)
+
+                # In pdb_only mode xyz_paths[counter] is None; defer total_lines/all_lines
+                # until after the PDB charge file has been loaded (see below).
+                if not use_pdb_charges:
+                    total_lines = Electrostatics.mapcount(file_path_xyz)
+                    init_all_lines = range(0, total_lines - 2)
+                else:
+                    total_lines = None   # set after loading PDB charges
+                    init_all_lines = None
 
                 # Handle excludeAtomfromEcalc - support both flat list and nested list
                 exclude_atoms = self.config.get('excludeAtomfromEcalc', [])
@@ -2547,7 +2735,11 @@ Please verify the file exists or set the path to None for jobs without point cha
                 else:
                     # Flat list/array: same exclusions for all folders
                     exclude_list = list(exclude_atoms) if hasattr(exclude_atoms, '__iter__') else []
-                all_lines = [x for x in init_all_lines if x not in exclude_list]
+
+                if not use_pdb_charges:
+                    all_lines = [x for x in init_all_lines if x not in exclude_list]
+                else:
+                    all_lines = None   # set after loading PDB charges
 
                 # Determine bond indices
                 if auto_find_bonds or (not input_bond_indices):
@@ -2725,12 +2917,10 @@ Please verify the file exists or set the path to None for jobs without charges.
 """)
 
                     df_pdb_charges = self.getPdbCharges(pdb_charge_path)
-                    total_atoms = total_lines - 2
-                    if len(df_pdb_charges) != total_atoms:
-                        raise ValueError(
-                            f"PDB charge count mismatch for {pdb_charge_path}: "
-                            f"{len(df_pdb_charges)} charges vs {total_atoms} atoms in {file_path_xyz}"
-                        )
+                    # In pdb_only mode the atom count comes from the PDB itself
+                    total_lines = len(df_pdb_charges) + 2
+                    init_all_lines = range(0, len(df_pdb_charges))
+                    all_lines = [x for x in init_all_lines if x not in exclude_list]
 
                 # Calculate E-field with atom-wise decomposition
                 if use_pdb_charges:
@@ -4164,7 +4354,8 @@ Please verify the file exists or set the path to None for jobs without charges.
                                               save_atomwise_decomposition=False, visualize=None,
                                               multipole_order=2, substrate_multipole_order=None,
                                               env_multipole_order=None, dielectric=1, dielectric_scale=1,
-                                              includePtChgs=None, ptchg_paths=None):
+                                              includePtChgs=None, ptchg_paths=None,
+                                              pdb_charge_paths=None):
         """
         Compute electrostatic stabilization using AMOEBA-style multipole tensor formalism.
 
@@ -4227,6 +4418,11 @@ Please verify the file exists or set the path to None for jobs without charges.
             List of paths (one per job), with None for jobs without point charges.
             Point charges are treated as monopole-only environment atoms.
             If provided, takes precedence over object-level settings (default: None).
+        pdb_charge_paths : str or list of str or None, optional
+            If provided, use partial charges from PDB B-factor columns only (no Multiwfn).
+            Monopole-only (multipole_order is forced to 1). Coordinates are also read from
+            the PDB, so no separate xyz file is needed.
+            Overrides the object-level pdb_charge_paths when the object was created in pdb_only mode.
 
         Returns:
         --------
@@ -4303,6 +4499,17 @@ Please verify the file exists or set the path to None for jobs without charges.
         ...     env_multipole_order=1         # MM: charges only
         ... )
         """
+        # Resolve pdb_charge_paths: function-level arg takes priority, else use object-level
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        use_pdb_charges = pdb_charge_paths is not None
+
+        # In pdb_only mode, only monopole interactions are supported
+        if use_pdb_charges:
+            multipole_order = 1
+            substrate_multipole_order = 1
+            env_multipole_order = 1
+
         # Validate required parameters
         if substrate_idxs is None or (isinstance(substrate_idxs, list) and len(substrate_idxs) == 0):
             raise ValueError(f"""
@@ -4327,8 +4534,9 @@ For complete examples, see:
 {'='*60}
 """)
 
-        # Validate charge type
-        validate_charge_type(charge_type, context="getElectrostatic_stabilization")
+        # Validate charge type (skip in pdb_only mode — no Multiwfn scheme needed)
+        if not use_pdb_charges:
+            validate_charge_type(charge_type, context="getElectrostatic_stabilization")
 
         # Validate multipole orders
         validate_numeric_range(multipole_order, "multipole_order", allowed_values=[1, 2, 3],
@@ -4393,78 +4601,116 @@ For complete examples, see:
             results_dict = {}
             # Use stored absolute path instead of constructing it
             file_path_xyz = self.xyz_paths[counter]
-            total_lines = Electrostatics.mapcount(file_path_xyz)
-            init_all_lines = np.arange(0, total_lines - 2)
+
+            if use_pdb_charges:
+                # pdb_only: load everything from the PDB file
+                if isinstance(pdb_charge_paths, list):
+                    pdb_charge_path = pdb_charge_paths[counter] if counter < len(pdb_charge_paths) else None
+                else:
+                    pdb_charge_path = pdb_charge_paths
+                if pdb_charge_path is None:
+                    print(f"Warning: No PDB charge file for job {counter}, skipping")
+                    counter += 1
+                    continue
+                pdb_charge_path = os.path.abspath(pdb_charge_path)
+                if not os.path.exists(pdb_charge_path):
+                    raise FileNotFoundError(f"PDB charge file not found: {pdb_charge_path}")
+                df_pdb = self.getPdbCharges(pdb_charge_path)
+                n_atoms = len(df_pdb)
+                init_all_lines = np.arange(0, n_atoms)
+
+                # Build df_all (monopole-only) from PDB DataFrame
+                df_all = df_pdb.rename(columns={'Atom': 'Element', 'charge': 'Atom_Charge'}).copy()
+                df_all["Index"] = range(0, n_atoms)
+                df_all['Dipole_Moment'] = [[0.0, 0.0, 0.0]] * n_atoms
+                df_all['Quadrupole_Moment'] = [np.zeros((3, 3))] * n_atoms
+
+                # Build df_geom from PDB coordinates (same column names as Geometry.getGeomInfo())
+                df_geom = df_pdb.rename(columns={'x': 'X', 'y': 'Y', 'z': 'Z'})[['Atom', 'X', 'Y', 'Z']].reset_index(drop=True)
+                df_geom.index = range(len(df_geom))
+
+            else:
+                total_lines = Electrostatics.mapcount(file_path_xyz)
+                init_all_lines = np.arange(0, total_lines - 2)
 
             if not env_idxs:
                 env_idx = [x for x in init_all_lines if x not in substrate_idx]
             else:
                 env_idx = env_idxs[counter]
 
-            # Partition charges (with multipole analysis if needed)
-            # Extract actual filenames from paths
-            molden_filename = os.path.basename(self.molden_paths[counter])
-            xyz_filename = os.path.basename(self.xyz_paths[counter])
-            comp_cost = self.multiwfn.partitionCharge(need_multipoles, f,
-                                            multiwfn_path, charge_type, owd,
-                                            molden_filename=molden_filename, xyz_filename=xyz_filename)
+            if use_pdb_charges:
+                # Skip partitionCharge — df_all already built above
+                pass
+            else:
+                # Partition charges (with multipole analysis if needed)
+                # Extract actual filenames from paths
+                molden_filename = os.path.basename(self.molden_paths[counter])
+                xyz_filename = os.path.basename(self.xyz_paths[counter])
+                comp_cost = self.multiwfn.partitionCharge(need_multipoles, f,
+                                                multiwfn_path, charge_type, owd,
+                                                molden_filename=molden_filename, xyz_filename=xyz_filename)
 
-            if comp_cost == -1:
-                print(f"Warning: Charge calculation failed for {f}, skipping")
-                counter += 1
-                continue
+                if comp_cost == -1:
+                    print(f"Warning: Charge calculation failed for {f}, skipping")
+                    counter += 1
+                    continue
 
-            # Get geometry information
-            geom = Geometry(file_path_xyz)
-            df_geom = geom.getGeomInfo()
+                # Get geometry information
+                geom = Geometry(file_path_xyz)
+                df_geom = geom.getGeomInfo()
 
-            # Load charge/multipole data with automatic fallback
-            # Use directory path directly (f is already absolute path from lst_of_folders)
-            multipole_name = f"{f}/Multipole{charge_type}.txt"
-            monopole_name = f"{f}/Charges{charge_type}.txt"
+            if use_pdb_charges:
+                # pdb_only: df_all and df_geom already built above; just build multipole_dict
+                multipole_dict = {int(row['Index']): row for _, row in df_all.iterrows()}
+                multipole_available = False
+            else:
+                # Load charge/multipole data with automatic fallback
+                # Use directory path directly (f is already absolute path from lst_of_folders)
+                multipole_name = f"{f}/Multipole{charge_type}.txt"
+                monopole_name = f"{f}/Charges{charge_type}.txt"
 
-            # Try to load multipole file first, fall back to charges if not available
-            multipole_available = os.path.exists(multipole_name)
+                # Try to load multipole file first, fall back to charges if not available
+                multipole_available = os.path.exists(multipole_name)
 
-            if need_multipoles and not multipole_available:
-                print(f"Warning: Multipole file not found for {f}, falling back to charges-only")
-                print(f"  Expected path: {multipole_name}")
-                print(f"  Requested multipole_order={multipole_order}, but only charges available")
-                print(f"  Setting both substrate and environment to monopole-only")
-                substrate_multipole_order = 1
-                env_multipole_order = 1
-                need_multipoles = False
-
-            if multipole_available and need_multipoles:
-                # Load multipole data
-                print(f"Loading multipole data from: {multipole_name}")
-                atomicDict = MultiwfnInterface.getmultipoles(multipole_name)
-                if not atomicDict:
-                    print(f"Warning: Multipole file exists but parsing failed for {f}")
-                    print(f"  File path: {multipole_name}")
-                    print(f"  Falling back to charges-only mode")
+                if need_multipoles and not multipole_available:
+                    print(f"Warning: Multipole file not found for {f}, falling back to charges-only")
+                    print(f"  Expected path: {multipole_name}")
+                    print(f"  Requested multipole_order={multipole_order}, but only charges available")
+                    print(f"  Setting both substrate and environment to monopole-only")
                     substrate_multipole_order = 1
                     env_multipole_order = 1
                     need_multipoles = False
-                    # Load charges instead
+
+                if multipole_available and need_multipoles:
+                    # Load multipole data
+                    print(f"Loading multipole data from: {multipole_name}")
+                    atomicDict = MultiwfnInterface.getmultipoles(multipole_name)
+                    if not atomicDict:
+                        print(f"Warning: Multipole file exists but parsing failed for {f}")
+                        print(f"  File path: {multipole_name}")
+                        print(f"  Falling back to charges-only mode")
+                        substrate_multipole_order = 1
+                        env_multipole_order = 1
+                        need_multipoles = False
+                        # Load charges instead
+                        df_all = pd.read_csv(monopole_name, sep='\s+',
+                                            names=["Element", 'x', 'y', 'z', "Atom_Charge"])
+                        df_all["Index"] = range(0, len(df_all))
+                        df_all['Dipole_Moment'] = [[0.0, 0.0, 0.0]] * len(df_all)
+                        df_all['Quadrupole_Moment'] = [np.zeros((3, 3))] * len(df_all)
+                        multipole_dict = {int(row['Index']): row for _, row in df_all.iterrows()}
+                    else:
+                        df_all = pd.DataFrame(atomicDict)
+                        df_all['Index'] = df_all['Index'].astype(int) - 1
+                        multipole_dict = {int(row['Index']): row for _, row in df_all.iterrows()}
+                else:
+                    # Load charges-only data
                     df_all = pd.read_csv(monopole_name, sep='\s+',
                                         names=["Element", 'x', 'y', 'z', "Atom_Charge"])
                     df_all["Index"] = range(0, len(df_all))
                     df_all['Dipole_Moment'] = [[0.0, 0.0, 0.0]] * len(df_all)
                     df_all['Quadrupole_Moment'] = [np.zeros((3, 3))] * len(df_all)
-                    multipole_dict = {int(row['Index']): row for _, row in df_all.iterrows()}
-                else:
-                    df_all = pd.DataFrame(atomicDict)
-                    df_all['Index'] = df_all['Index'].astype(int) - 1
-                    multipole_dict = {int(row['Index']): row for _, row in df_all.iterrows()}
-            else:
-                # Load charges-only data
-                df_all = pd.read_csv(monopole_name, sep='\s+',
-                                    names=["Element", 'x', 'y', 'z', "Atom_Charge"])
-                df_all["Index"] = range(0, len(df_all))
-                df_all['Dipole_Moment'] = [[0.0, 0.0, 0.0]] * len(df_all)
-                df_all['Quadrupole_Moment'] = [np.zeros((3, 3))] * len(df_all)
-                multipole_dict = {row['Index']: row for _, row in df_all.iterrows()}
+                    multipole_dict = {row['Index']: row for _, row in df_all.iterrows()}
 
             # Now handle substrate and environment separately for QM/MM support
             df_substrate = df_all[df_all["Index"].isin(substrate_idx)].copy()
@@ -4694,7 +4940,9 @@ Please verify the file exists or set the path to None for jobs without point cha
 
                         # Create PDB file
                         pdb_name = f'estab_{charge_type}_{structure_name}_tensor_sub{substrate_multipole_order}_env{env_multipole_order}.pdb'
-                        if multipole_available and (substrate_multipole_order >= 2 or env_multipole_order >= 2):
+                        if use_pdb_charges:
+                            print(f"    Visualization not supported in pdb_only mode; skipping PDB creation.")
+                        elif multipole_available and (substrate_multipole_order >= 2 or env_multipole_order >= 2):
                             Visualize(file_path_xyz).makePDB(multipole_name, b_factors, pdb_name)
                         else:
                             Visualize(file_path_xyz).makePDB(monopole_name, b_factors, pdb_name)
