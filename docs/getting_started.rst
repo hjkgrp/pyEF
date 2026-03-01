@@ -1,8 +1,9 @@
 Getting Started
 ===============
 
-**Jump to:** `Installation`_ · `getCharges()`_ · `getEfield()`_ · `getESP()`_ · `getElectrostatic_stabilization()`_
+**Jump to:** `Installation`_ · `Configuration kwargs`_ · `getCharges()`_ · `getEfield()`_ · `getESP()`_ · `getElectrostatic_stabilization()`_
 
+.. _Configuration kwargs: `Initialization Configuration (kwargs)`_
 .. _getCharges(): `Computing Partial Charges`_
 .. _getEfield(): `Computing Electric Fields`_
 .. _getESP(): `Computing Electrostatic Potentials`_
@@ -98,6 +99,82 @@ Supported Charge Schemes
 
   - ⚠️ **Limitation**: Missing parameters for some elements including Na, K,
     and most transition metals. Will fail if your system contains unsupported elements
+
+.. _initialization-kwargs:
+
+Initialization Configuration (kwargs)
+--------------------------------------
+
+When creating an ``Electrostatics`` object, you can pass keyword arguments to configure the
+calculation behavior. All kwargs are optional.
+
+**ECP (Effective Core Potential) support:**
+
+If your QM calculation used ECPs, you must tell pyEF so it can fix molden file artifacts:
+
+.. code-block:: python
+
+   # For a TeraChem calculation with LACVPS (default ECP)
+   es = Electrostatics(molden_paths, xyz_paths, hasECP=True, ECP="lacvps")
+
+   # For a calculation with Stuttgart RSC ECPs
+   es = Electrostatics(molden_paths, xyz_paths, hasECP=True, ECP="stuttgart_rsc")
+
+Supported ``ECP`` values:
+
+- ``"lacvps"`` (default) -- Hybrid: all-electron for Z |le| 18, LANL2DZ for heavier elements
+- ``"lacvp"`` -- Hybrid: all-electron for Z |le| 10, LANL2DZ for heavier elements
+- ``"lanl2dz"`` -- LANL2DZ ECP, widely used for transition metals
+- ``"def2"`` -- def2-type ECPs (e.g., def2-SVP, def2-TZVP families)
+- ``"crenbl"`` -- CRENBL shape-consistent relativistic ECPs
+- ``"stuttgart_rsc"`` -- Stuttgart Relativistic Small Core ECPs
+
+.. |le| unicode:: U+2264
+
+**Dielectric environment:**
+
+.. code-block:: python
+
+   # Protein interior (dielectric ~ 4)
+   es = Electrostatics(molden_paths, xyz_paths, dielectric=4.0)
+
+   # Water solvent (dielectric ~ 78.5)
+   es = Electrostatics(molden_paths, xyz_paths, dielectric=78.5)
+
+   # Use dielectric=1 for bonded atoms (special boundary treatment)
+   es = Electrostatics(molden_paths, xyz_paths, dielectric=4.0, changeDielectBoundBool=True)
+
+**QM/MM point charges:**
+
+.. code-block:: python
+
+   # New API: per-job point charge paths
+   es = Electrostatics(molden_paths, xyz_paths,
+                        ptchg_paths=['/path/to/ptchg1.txt', '/path/to/ptchg2.txt'],
+                        includePtChgs=True)
+
+**Computation options:**
+
+.. code-block:: python
+
+   # Force recalculation (ignore cached charges)
+   es = Electrostatics(molden_paths, xyz_paths, rerun=True)
+
+   # Skip missing files in batch processing
+   es = Electrostatics(molden_paths, xyz_paths, skip_missing_files=True)
+
+   # Increase basis function limit for very large systems
+   es = Electrostatics(molden_paths, xyz_paths, maxIHirshBasis=20000)
+
+**Visualization:**
+
+.. code-block:: python
+
+   # Enable PDB output for E-fields and charges
+   es = Electrostatics(molden_paths, xyz_paths,
+                        visualize_ef=True, visualize_charges=True)
+
+For the complete list of all kwargs and their defaults, see the :ref:`API Reference <configuration-kwargs>`.
 
 Computing Partial Charges
 -------------------------

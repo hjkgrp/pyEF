@@ -6,7 +6,9 @@ Note: This package is under active development as of 2026, if you encounter any 
 
 ## Table of Contents
 1. **Installation**
-2. **Basic Usage**
+2. **Configuration Options (kwargs)**
+3. **Basic Usage**
+4. **PDB-Only Mode (No Multiwfn Required)**
 
 ## 1. Installation
 
@@ -42,7 +44,49 @@ export PATH=/path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI:$PATH
 
 Or use the full path when running PyEF (e.g., `multiwfn_path: /path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI`).
 
-## 2. Basic Usage
+## 2. Configuration Options (kwargs)
+
+When creating an `Electrostatics` object, you can pass keyword arguments to customize the calculation. All are optional.
+
+### ECP (Effective Core Potential) Support
+
+If your QM calculation used ECPs, set `hasECP=True` and specify the ECP family:
+
+```python
+es = Electrostatics(molden_paths, xyz_paths, hasECP=True, ECP="lacvps")
+```
+
+**Supported `ECP` values:**
+
+| ECP Value | Description |
+|-----------|-------------|
+| `"lacvps"` | (default) Hybrid: all-electron for Z ≤ 18 (up to Ar), LANL2DZ for heavier elements |
+| `"lacvp"` | Hybrid: all-electron for Z ≤ 10 (up to Ne), LANL2DZ for heavier elements |
+| `"lanl2dz"` | LANL2DZ — widely used ECP for transition metals |
+| `"def2"` | def2-type ECPs (e.g., def2-SVP, def2-TZVP families) |
+| `"crenbl"` | CRENBL shape-consistent relativistic ECPs |
+| `"stuttgart_rsc"` | Stuttgart Relativistic Small Core ECPs |
+
+### All Configuration kwargs
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `hasECP` | bool | `False` | Whether the QM calculation used ECPs |
+| `ECP` | str | `"lacvps"` | ECP basis set family (see above). Only used when `hasECP=True` |
+| `dielectric` | float | `1` | Dielectric constant (1=vacuum, 4≈protein, 78.5≈water) |
+| `dielectric_scale` | float | `1` | Scaling factor for point charges in dielectric treatment |
+| `changeDielectBoundBool` | bool | `False` | Use dielectric=1 for bonded atoms |
+| `includePtChgs` | bool | `False` | Include QM/MM point charges in calculations |
+| `rerun` | bool | `False` | Force recalculation of charges (ignore cache) |
+| `maxIHirshBasis` | int | `12000` | Max basis functions for Hirshfeld-I analysis |
+| `maxIHirshFuzzyBasis` | int | `6000` | Max basis functions for fuzzy Hirshfeld-I analysis |
+| `excludeAtomfromEcalc` | list | `[]` | Atom indices to exclude from E-field calculations |
+| `skip_missing_files` | bool | `False` | Skip jobs with missing files instead of raising errors |
+| `visualize_ef` | bool | `False` | Create PDB files with atom-wise E-field data |
+| `visualize_charges` | bool | `False` | Create PDB files with partial charges |
+| `visualize_per_bond` | bool | `False` | Create separate PDB files per bond |
+
+## 3. Basic Usage
 
 ### Electric Field Calculation
 
@@ -201,6 +245,43 @@ df = es.getCharges(charge_types =['RESP', 'Hirshfeld_I'], multiwfn_path='/path/t
 ```
 spectrum b, blue_white_red, minimum=-1, maximum=1
 ```
+
+---
+
+## 4. PDB-Only Mode (No Multiwfn Required)
+
+Skip the QM workflow entirely by placing your partial charges in the **B-factor column** of a PDB file. No `.molden`, `.xyz`, or Multiwfn needed. Monopole charges only.
+
+**Electric Field:**
+```python
+from pyef.analysis import Electrostatics
+import numpy as np
+
+es = Electrostatics(pdb_charge_paths=['job1/charges.pdb', 'job2/charges.pdb'], dielectric=1.0)
+
+sub_indices = [np.arange(0, 20), np.arange(0, 20)]
+es.setExcludeAtomFromCalc(sub_indices)
+
+df = es.getEfield(input_bond_indices=[[(25, 26)], [(25, 26)]], Efielddata_filename='ef_pdb')
+```
+
+**ESP:**
+```python
+es = Electrostatics(pdb_charge_paths=['job1/charges.pdb', 'job2/charges.pdb'],
+                    esp_atom_idx=[30, 30], dielectric=4.0)
+
+df = es.getESP(ESPdata_filename='esp_pdb')
+```
+
+**Electrostatic Stabilization:**
+```python
+es = Electrostatics(pdb_charge_paths=['job1/charges.pdb', 'job2/charges.pdb'], dielectric=1.0)
+
+df = es.getElectrostatic_stabilization(substrate_idxs=[np.arange(0, 10), np.arange(0, 10)],
+                                        name_dataStorage='estab_pdb')
+```
+
+`pdb_charge_paths` can also be passed directly to any of the three calculation functions on a standard (molden/xyz) object to override charges for that call only.
 
 ---
 

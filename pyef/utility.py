@@ -387,23 +387,30 @@ class MoldenObject:
 
 
     def fix_ECPmolden(self, owd, ECP):
-        """Prepares output terachem data for analysis, mainly isolating final .xyz frame and naming .molden file appropriotely"""
+        """Fix ECP artifacts in TeraChem Molden files for Multiwfn compatibility.
+
+        Performs three corrections:
+        1. Replaces full atomic numbers with valence electron counts for ECP atoms
+        2. Adds [Pseudo] section listing ECP atoms (required by Multiwfn)
+        3. Removes any incorrectly added [5d]/[7f]/[9g] tags (TeraChem writes
+           Cartesian basis functions which is the Molden default)
+        """
         from .geometry import Geometry  # Import here to avoid circular dependency
         FAMILIES = ["lanl2dz", "stuttgart_rsc", "def2", "crenbl"]
         # Hybrid families with cutoff rules
         HYBRID_FAMILIES = {
             "lacvps": {
-                "cutoff_Z": 18,          # Z <= 18 ?~F~R all-electron
+                "cutoff_Z": 18,          # Z <= 18 → all-electron
                 "heavy_family": "lanl2dz"},
             "lacvp": {
-                "cutoff_Z": 10,          # Z <= 10 ?~F~R all-electron
+                "cutoff_Z": 10,          # Z <= 10 → all-electron
                 "heavy_family": "lanl2dz"
                 }
         }
 
         #check if the ECP json already exists... if not you will need to generate it using the funcitonality above
         json_path = owd + '/' + ECP + "ecp_core_maps.json"
-        
+
         # Check if the file exists
         if os.path.exists(json_path) and os.path.isfile(json_path):
                pass
@@ -433,9 +440,9 @@ class MoldenObject:
                 base_maps[ECP] = self.build_core_map(ECP)
                 with open(json_path, "w") as f:
                     json.dump(base_maps, f, indent=2)
-                            
-        #Now the json should be establish 
-    
+
+        #Now the json should be establish
+
         with open(json_path, "r") as f:
             print(f'        >loading {ECP} parameters')
             ecp_dict = json.load(f)[ECP]
@@ -450,15 +457,72 @@ class MoldenObject:
                     Z = self.periodic_table[elem]
                     new_Z = Z - ecp_dict[elem]
                     change_dict[elem] = new_Z
-            
+
         with open(self.moldenFile, 'r') as file:
-            content = file.read()
-            for change_elem, new_Z in change_dict.items():
-                print(f'            Molden file at {self.moldenFile} changed: {change_elem} non-core electrons set to {new_Z}')
-                pattern = re.compile(rf'({change_elem}\s+\d+\s+)(\d+)')
-                content = pattern.sub(rf'\g<1>{new_Z}', content)
-            with open(self.moldenFile, 'w') as file:
-                file.write(content)
+            lines = file.readlines()
+
+        # Check if fixes have already been applied (idempotency)
+        full_content = ''.join(lines)
+        has_pseudo_already = '[pseudo]' in full_content.lower()
+
+        # --- Step 1: Fix atomic numbers in [Atoms] section ---
+        # Also collect ECP atom entries for the [Pseudo] section
+        pseudo_entries = []  # list of (symbol, atom_index, new_Z)
+        in_atoms = False
+        gto_line_idx = None
+        mo_line_idx = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.lower().startswith('[atoms]'):
+                in_atoms = True
+                continue
+            if stripped.lower().startswith('[pseudo]'):
+                in_atoms = False
+                continue
+            if stripped.lower().startswith('[gto]'):
+                in_atoms = False
+                gto_line_idx = i
+                continue
+            if stripped.lower().startswith('[mo]'):
+                mo_line_idx = i
+                continue
+
+            if in_atoms and stripped:
+                parts = line.split()
+                if len(parts) >= 6:
+                    sym = parts[0]
+                    if sym in change_dict:
+                        new_Z = change_dict[sym]
+                        atom_idx = parts[1]
+                        current_Z = int(parts[2])
+                        # Only replace if not already corrected
+                        if current_Z != new_Z:
+                            pattern = re.compile(rf'({re.escape(sym)}\s+{re.escape(atom_idx)}\s+)(\d+)')
+                            lines[i] = pattern.sub(rf'\g<1>{new_Z}', line)
+                        pseudo_entries.append((sym, atom_idx, new_Z))
+
+        for change_elem, new_Z in change_dict.items():
+            print(f'            Molden file at {self.moldenFile} changed: {change_elem} non-core electrons set to {new_Z}')
+
+        # --- Step 2: Add [Pseudo] section before [GTO] ---
+        if pseudo_entries and gto_line_idx is not None and not has_pseudo_already:
+            pseudo_lines = ['[Pseudo]\n']
+            for sym, atom_idx, new_Z in pseudo_entries:
+                pseudo_lines.append(f'{sym}   {atom_idx}  {new_Z}\n')
+            lines[gto_line_idx:gto_line_idx] = pseudo_lines
+            # Adjust mo_line_idx since we inserted lines before it
+            if mo_line_idx is not None:
+                mo_line_idx += len(pseudo_lines)
+
+        # --- Step 3: Remove any incorrectly added [5d]/[7f]/[9g] tags ---
+        # TeraChem writes Cartesian basis functions in Molden format (6d/10f/15g),
+        # which is the Molden default. These tags should NOT be present.
+        lines = [l for l in lines if l.strip().lower() not in ('[5d]', '[7f]', '[9g]',
+                                                                '[5d7f]', '[5d10f]')]
+
+        with open(self.moldenFile, 'w') as file:
+            file.writelines(lines)
 
 
 # ============================================================================
@@ -554,6 +618,8 @@ class MultiwfnInterface:
             If Multiwfn fails with non-zero exit code
         """
         # Prepare the full command with output redirection if specified
+        # Prepend ulimit and KMP_STACKSIZE to prevent segfaults with large systems
+        command = f"ulimit -s unlimited; export KMP_STACKSIZE=200000000; {command}"
         full_command = command
         if output_file:
             full_command = f"{command} > {output_file}"
