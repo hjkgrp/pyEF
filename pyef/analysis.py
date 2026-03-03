@@ -1611,10 +1611,10 @@ Correct usage:
                 mu_dot_r = np.dot(dipole_vec, dist_vec)
                 E_dipole_atomic = inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(1/(r**5))*(3*mu_dot_r*dist_vec - r_squared*dipole_vec)
 
-                # Quadrupole term: (k*e/ε_r) * [5*r_ij*(r_ij^T Q_j r_ij) - 2*r²*(Q_j·r_ij)] / (2*r⁷)
+                # Quadrupole term: (k*e/ε_r) * [-5*(r_ij^T Q_j r_ij)*r_ij + 2*r²*(Q_j·r_ij)] / r⁷
                 Qr = np.dot(quadrupole_arr, dist_vec)  # Matrix-vector product: Q·r
                 rTQr = np.dot(dist_vec, Qr)  # Scalar: r^T Q r = r·(Q·r)
-                E_quad_atomic = inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(1/(2*r**7))*(5*rTQr*dist_vec - 2*r_squared*Qr)
+                E_quad_atomic = inv_eps*constants.COULOMB_CONSTANT*constants.ELEMENTARY_CHARGE*(1/r**7)*(-5*rTQr*dist_vec + 2*r_squared*Qr)
 
                 # Total atomic contribution (all three multipole terms)
                 E_atomic_contrib_vec = E_monopole_atomic + E_dipole_atomic + E_quad_atomic
@@ -1717,21 +1717,38 @@ Correct usage:
 
         #create list of bound atoms, these are treated with a different dielectric
         bound_atoms = Geometry(xyzfilepath).getBondedAtoms(idx_atom)
-        total_esp= 0
+        total_esp = 0
         for idx in charge_range:
             atom_dict = lst_multipole_dict[idx]
             if idx == idx_atom:
                 continue
-            elif idx in bound_atoms:
-                #default it to exclude bound atoms
-                 r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 + ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 + ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**(0.5)
-                 total_esp = total_esp + (atom_dict["Atom_Charge"]/r)
-            else:
-                # Calculate esp and convert to units (A to m)
-                r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 + ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 + ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**(0.5)
-                total_esp = total_esp + (1/dielectric)*(atom_dict["Atom_Charge"]/r)
 
-        final_esp = constants.COULOMB_CONSTANT*total_esp*((constants.ELEMENTARY_CHARGE))  #Units: N*m^2/(C^2)*(C/m) = N*m/C = J/C = Volt
+            # r_ij = r_i - r_j (target - source), in meters
+            dist_vec = np.array([
+                (xo - xs[idx]) * constants.ANGSTROM_TO_M,
+                (yo - ys[idx]) * constants.ANGSTROM_TO_M,
+                (zo - zs[idx]) * constants.ANGSTROM_TO_M
+            ])
+            r = np.linalg.norm(dist_vec)
+            inv_eps = 1.0 if idx in bound_atoms else 1.0 / dielectric
+
+            # Monopole term: q / R
+            V_atomic = atom_dict["Atom_Charge"] / r
+
+            # Dipole term: -μ · r_ij / R³
+            if 'Dipole_Moment' in atom_dict:
+                dipole_vec = constants.BOHR_TO_M * np.array(atom_dict["Dipole_Moment"])
+                V_atomic -= np.dot(dipole_vec, dist_vec) / r**3
+
+            # Quadrupole term: (1/2) * r_ij^T Θ r_ij / R^5
+            if 'Quadrupole_Moment' in atom_dict:
+                quadrupole_arr = constants.BOHR_TO_M**2 * np.array(atom_dict['Quadrupole_Moment'])
+                rTQr = np.dot(dist_vec, np.dot(quadrupole_arr, dist_vec))
+                V_atomic += 0.5 * rTQr / r**5
+
+            total_esp += inv_eps * V_atomic
+
+        final_esp = constants.COULOMB_CONSTANT * total_esp * constants.ELEMENTARY_CHARGE  #Units: N*m^2/(C^2)*(C/m) = N*m/C = J/C = Volt
         return [final_esp, df['Atom'][idx_atom] ]
  
 
