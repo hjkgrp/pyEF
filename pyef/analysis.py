@@ -4987,6 +4987,239 @@ Please verify the file exists or set the path to None for jobs without point cha
         return df
     
 
+    # -----------------------------------------------------------------------
+    def getEfieldsNormalMode(self,
+                             fchk_path,
+                             mode_index,
+                             output_filename,
+                             multiwfn_path,
+                             n_solute,
+                             charge_type='CM5',
+                             mode_vectors=None,
+                             align_heavy_only=True,
+                             dielectric_scale=1.0):
+        """Project the environmental electric field onto a vibrational normal mode.
+
+        Computes the Vibrational Stark Effect (VSE) field:
+
+            F_mode = Σ_i  F_i · (R @ L_i)
+
+        where F_i is the Coulomb field at solute atom i from the environment
+        (QM solvent charges + MM point charges if QM/MM), L_i is the normal
+        mode displacement vector, and R is the Kabsch rotation that aligns the
+        QM reference geometry (from fchk) to each frame's optimised geometry.
+
+        Supports three calculation modes depending on how the Electrostatics
+        object was constructed:
+
+        * **Pure QM** — only molden files, no point charges
+        * **QM/MM**   — molden files + MM point charges (via ptchg_paths /
+          includePtChgs)
+        * **Reuse existing charges** — if ``Charges{charge_type}.txt`` already
+          exists in each job folder (e.g. from a previous ``getEfield`` run),
+          Multiwfn is skipped for that frame.
+
+        Parameters
+        ----------
+        fchk_path : str
+            Path to the ``.fchk`` file.
+
+            * **Gaussian** format: geometry + normal modes are read directly;
+              ``mode_vectors`` is ignored.
+            * **Q-Chem** format: only reference geometry is read; you must
+              supply ``mode_vectors``.
+
+        mode_index : int
+            1-based mode number (as labelled by Q-Chem / Gaussian output).
+
+        output_filename : str
+            Stem for the output CSV (extension ``.csv`` is added if absent).
+
+        multiwfn_path : str
+            Path to the Multiwfn executable.
+
+        n_solute : int
+            Number of solute atoms (first *n_solute* rows of each charge file
+            are treated as the molecule of interest; the rest are environment).
+
+        charge_type : str, optional
+            Charge partitioning scheme (default ``'CM5'``).
+
+        mode_vectors : np.ndarray or None, optional
+            Normal mode displacement array, shape ``(n_modes, n_atoms, 3)`` or
+            ``(n_atoms, 3)`` for a single mode.  Required for Q-Chem fchk;
+            ignored for Gaussian fchk.
+
+        align_heavy_only : bool, optional
+            If ``True`` (default), use only non-hydrogen atoms for the Kabsch
+            alignment (more stable; avoids H-atom positional noise).
+
+        dielectric_scale : float, optional
+            Scale factor applied to MM point charges (default 1.0).  Set to
+            ``1/epsilon`` for implicit-solvent screening of the MM region.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``job``, ``F_mode_VA`` (V/Å), ``F_mode_MV_cm``
+            (MV/cm = 100 × V/Å), plus ``freq_cm1`` if read from Gaussian fchk.
+
+        Output Files
+        ------------
+        ``{output_filename}.csv`` — one row per job.
+
+        Examples
+        --------
+        Pure QM (Gaussian fchk, mode from fchk):
+
+        >>> es = Electrostatics(molden_paths, xyz_paths)
+        >>> es.prepData()
+        >>> df = es.getEfieldsNormalMode(
+        ...     fchk_path='freq.fchk',
+        ...     mode_index=33,
+        ...     output_filename='nm_ef_CM5',
+        ...     multiwfn_path='/path/to/Multiwfn',
+        ...     n_solute=15,
+        ... )
+
+        QM/MM (Q-Chem fchk, mode vectors supplied):
+
+        >>> es = Electrostatics(molden_paths, xyz_paths, ptchg_paths=ptchg_list)
+        >>> es.prepData()
+        >>> df = es.getEfieldsNormalMode(
+        ...     fchk_path='freq.fchk',
+        ...     mode_index=33,
+        ...     output_filename='nm_ef_QMMMmode33',
+        ...     multiwfn_path='/path/to/Multiwfn',
+        ...     n_solute=15,
+        ...     mode_vectors=PZQ_MODE33,   # (n_atoms, 3) array
+        ... )
+        """
+        import pandas as pd
+        from .fchk_interface import parse_geometry, get_mode, detect_format
+        from .normal_mode import (get_heavy_atom_indices,
+                                  align_to_reference,
+                                  project_efield_onto_mode,
+                                  per_atom_efield_from_charges)
+
+        # ── 1. Parse reference geometry and mode vector from fchk ────────────
+        atomic_numbers, ref_coords = parse_geometry(fchk_path)
+
+        if len(atomic_numbers) != n_solute:
+            raise ValueError(
+                f"fchk has {len(atomic_numbers)} atoms but n_solute={n_solute}. "
+                "The fchk should contain only the solute molecule."
+            )
+
+        freq, mode_vec = get_mode(fchk_path, mode_index, mode_vectors)
+        mode_vec = np.asarray(mode_vec, dtype=float)   # (n_solute, 3)
+
+        align_idx = (get_heavy_atom_indices(atomic_numbers)
+                     if align_heavy_only else np.arange(n_solute))
+
+        fmt = detect_format(fchk_path)
+        freq_label = f"{freq:.2f}" if freq is not None else "user-supplied"
+        print(f"\n{'='*60}")
+        print(f"getEfieldsNormalMode")
+        print(f"  fchk format  : {fmt}")
+        print(f"  mode index   : {mode_index}  (freq = {freq_label} cm⁻¹)")
+        print(f"  n_solute     : {n_solute}")
+        print(f"  charge_type  : {charge_type}")
+        print(f"  jobs         : {len(self.lst_of_folders)}")
+        print(f"{'='*60}\n")
+
+        # ── 2. Ensure charge files exist (run Multiwfn if needed) ────────────
+        owd = os.getcwd()
+        for idx, folder in enumerate(self.lst_of_folders):
+            folder = str(folder)
+            charge_file = os.path.join(folder, f"Charges{charge_type}.txt")
+            if os.path.exists(charge_file):
+                continue
+            # Need to run Multiwfn for this job
+            molden_path = self.molden_paths[idx]
+            os.chdir(folder)
+            try:
+                self.multiwfn.getCharges(charge_type, molden_path, multiwfn_path)
+            finally:
+                os.chdir(owd)
+
+        # ── 3. Process each job ──────────────────────────────────────────────
+        records = []
+        for idx, folder in enumerate(self.lst_of_folders):
+            folder = str(folder)
+            charge_file = os.path.join(folder, f"Charges{charge_type}.txt")
+
+            if not os.path.exists(charge_file):
+                print(f"  WARNING: charge file missing for {folder}, skipping.")
+                continue
+
+            # Load QM region charges (element  x  y  z  charge)
+            df_chg = pd.read_csv(
+                charge_file, sep=r'\s+',
+                names=['element', 'x', 'y', 'z', 'charge']
+            )
+            coords  = df_chg[['x', 'y', 'z']].values.astype(float)   # (n_qm, 3)
+            charges = df_chg['charge'].values.astype(float)            # (n_qm,)
+
+            solute_coords  = coords[:n_solute]
+            env_coords_qm  = coords[n_solute:]
+            env_charges_qm = charges[n_solute:]
+
+            # Optional MM point charges
+            env_coords_mm  = np.empty((0, 3))
+            env_charges_mm = np.empty(0)
+
+            ptchg_path = self._get_ptchg_path_for_job(idx, folder)
+            if ptchg_path is not None and os.path.exists(ptchg_path):
+                df_mm = self.getPtChgs(ptchg_path)
+                env_coords_mm  = df_mm[['x', 'y', 'z']].values.astype(float)
+                env_charges_mm = df_mm['charge'].values.astype(float) * dielectric_scale
+
+            # Combine QM-environment + MM
+            if len(env_coords_mm):
+                env_coords  = np.vstack([env_coords_qm,  env_coords_mm])
+                env_charges = np.concatenate([env_charges_qm, env_charges_mm])
+            else:
+                env_coords  = env_coords_qm
+                env_charges = env_charges_qm
+
+            # Kabsch rotation: align fchk reference solute → current solute
+            R = align_to_reference(solute_coords, ref_coords, align_idx)
+
+            # Per-atom E-field at each solute atom from environment (V/Å)
+            F_atoms = per_atom_efield_from_charges(
+                solute_coords, env_coords, env_charges
+            )
+
+            # Project onto normal mode
+            F_mode = project_efield_onto_mode(F_atoms, mode_vec, R)
+
+            records.append({
+                'job':        folder,
+                'freq_cm1':   freq,
+                'F_mode_VA':  F_mode,
+                'F_mode_MV_cm': F_mode * 100.0,   # V/Å → MV/cm
+            })
+
+            if (idx + 1) % 10 == 0 or (idx + 1) == len(self.lst_of_folders):
+                print(f"  {idx+1}/{len(self.lst_of_folders)}  "
+                      f"F_mode = {F_mode:.4f} V/Å  ({F_mode*100:.2f} MV/cm)")
+
+        df_out = pd.DataFrame(records)
+
+        # ── 4. Save CSV ──────────────────────────────────────────────────────
+        if not output_filename.endswith('.csv'):
+            output_filename += '.csv'
+        df_out.to_csv(output_filename, index=False)
+        print(f"\nSaved {len(df_out)} results to {output_filename}")
+
+        if len(df_out):
+            mean_f = df_out['F_mode_MV_cm'].mean()
+            std_f  = df_out['F_mode_MV_cm'].std()
+            print(f"  F_mode: {mean_f:.3f} ± {std_f:.3f} MV/cm")
+
+        return df_out
+
 
 def visualize_charges_pdb(xyz_file, charges, pdb_name):
     """Create a PDB file with charges visualized in the b-factor column.
