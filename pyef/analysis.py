@@ -1503,6 +1503,131 @@ Correct usage:
         E_vec = [Ex, Ey, Ez]
         return [constants.VM_TO_VA*np.array(E_vec), position_vec, df_charges['Atom'][idx_atom], constants.VM_TO_VA*np.array(atom_wise_additions)]
 
+    def monopole_pointEfield(self, point, charge_range, charge_file, df_ptchg=None):
+        """Compute E-field at an arbitrary Cartesian point using monopole charges.
+
+        Parameters
+        ----------
+        point : array-like of float
+            [x, y, z] in Angstrom of the evaluation point.
+        charge_range : list or range
+            Atom indices to include in the calculation.
+        charge_file : str
+            Path to the charge file.
+        df_ptchg : pd.DataFrame or None
+            Optional pre-loaded point charge dataframe.
+
+        Returns
+        -------
+        list
+            [E_vec (V/Angstrom), position_vec (m), atom_wise_contributions (V/Angstrom)]
+        """
+        inv_eps = 1 / self.config['dielectric']
+        df = pd.read_csv(charge_file, sep='\s+', names=["Atom", 'x', 'y', 'z', "charge"])
+
+        charges = df['charge']
+        xs = df['x']
+        ys = df['y']
+        zs = df['z']
+
+        xo, yo, zo = float(point[0]), float(point[1]), float(point[2])
+        position_vec = constants.ANGSTROM_TO_M * np.array([xo, yo, zo])
+        Ex, Ey, Ez = 0, 0, 0
+        atom_wise_additions = []
+
+        for idx in range(len(xs)):
+            if idx not in charge_range:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+            r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                 ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                 ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**0.5
+            if r < 1e-12:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+            Ex_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((xs[idx] - xo) * constants.ANGSTROM_TO_M) / r**3
+            Ey_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((ys[idx] - yo) * constants.ANGSTROM_TO_M) / r**3
+            Ez_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((zs[idx] - zo) * constants.ANGSTROM_TO_M) / r**3
+            Ex += Ex_contrib
+            Ey += Ey_contrib
+            Ez += Ez_contrib
+            atom_wise_additions.append([Ex_contrib, Ey_contrib, Ez_contrib])
+
+        E_vec = [Ex, Ey, Ez]
+
+        if self.config['includePtChgs']:
+            if df_ptchg is None:
+                df_ptchg = self.getPtChgs(self.config['ptChgfp'])
+            MM_xs = list(df_ptchg['x'])
+            MM_ys = list(df_ptchg['y'])
+            MM_zs = list(df_ptchg['z'])
+            MM_charges = np.array(list(df_ptchg['charge'])) * (1 / math.sqrt(self.config['dielectric_scale']))
+            for chg_idx in range(len(MM_xs)):
+                r = (((MM_xs[chg_idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                     ((MM_ys[chg_idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                     ((MM_zs[chg_idx] - zo)*constants.ANGSTROM_TO_M)**2)**0.5
+                if r < 1e-12:
+                    atom_wise_additions.append([0, 0, 0])
+                    continue
+                dist_vec = constants.ANGSTROM_TO_M * np.array([(MM_xs[chg_idx] - xo), (MM_ys[chg_idx] - yo), (MM_zs[chg_idx] - zo)])
+                E_to_add = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * MM_charges[chg_idx] * (1 / r**3) * dist_vec
+                E_vec[0] += E_to_add[0]
+                E_vec[1] += E_to_add[1]
+                E_vec[2] += E_to_add[2]
+                atom_wise_additions.append(E_to_add)
+
+        return [constants.VM_TO_VA * np.array(E_vec), position_vec, constants.VM_TO_VA * np.array(atom_wise_additions)]
+
+    def pointcharge_pointEfield(self, point, charge_range, df_charges):
+        """Compute E-field at an arbitrary Cartesian point using point charges from a DataFrame.
+
+        Parameters
+        ----------
+        point : array-like of float
+            [x, y, z] in Angstrom of the evaluation point.
+        charge_range : list or range
+            Atom indices to include in the calculation.
+        df_charges : pd.DataFrame
+            DataFrame with columns: ['Atom', 'x', 'y', 'z', 'charge'].
+
+        Returns
+        -------
+        list
+            [E_vec (V/Angstrom), position_vec (m), atom_wise_contributions (V/Angstrom)]
+        """
+        inv_eps = 1 / self.config['dielectric']
+
+        charges = df_charges['charge'].reset_index(drop=True)
+        xs = df_charges['x'].reset_index(drop=True)
+        ys = df_charges['y'].reset_index(drop=True)
+        zs = df_charges['z'].reset_index(drop=True)
+
+        xo, yo, zo = float(point[0]), float(point[1]), float(point[2])
+        position_vec = constants.ANGSTROM_TO_M * np.array([xo, yo, zo])
+        Ex, Ey, Ez = 0, 0, 0
+        atom_wise_additions = []
+
+        for idx in range(len(xs)):
+            if idx not in charge_range:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+            r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                 ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                 ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**0.5
+            if r < 1e-12:
+                atom_wise_additions.append([0, 0, 0])
+                continue
+            Ex_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((xs[idx] - xo) * constants.ANGSTROM_TO_M) / r**3
+            Ey_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((ys[idx] - yo) * constants.ANGSTROM_TO_M) / r**3
+            Ez_contrib = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * charges[idx] * ((zs[idx] - zo) * constants.ANGSTROM_TO_M) / r**3
+            Ex += Ex_contrib
+            Ey += Ey_contrib
+            Ez += Ez_contrib
+            atom_wise_additions.append([Ex_contrib, Ey_contrib, Ez_contrib])
+
+        E_vec = [Ex, Ey, Ez]
+        return [constants.VM_TO_VA * np.array(E_vec), position_vec, constants.VM_TO_VA * np.array(atom_wise_additions)]
+
     #Helper functions for resp-based adjustement of MD point charges
 
     def compute_esp(q_coords, q_vals, probe_coords):
@@ -1659,6 +1784,98 @@ Correct usage:
                 multipole_Efield_contribution.append(E_to_add)
             #Add contributions to Monopole E from point charges to total E
         return [constants.VM_TO_VA*np.array(E_vec), position_vec, df['Atom'][idx_atom], constants.VM_TO_VA*np.array(Monopole_E), constants.VM_TO_VA*np.array(multipole_Efield_contribution)]
+
+    def multipole_pointEfield(self, point, charge_range, xyz_file, atom_multipole_file, df_ptchg=None):
+        """Compute E-field at an arbitrary Cartesian point using multipole expansion.
+
+        Parameters
+        ----------
+        point : array-like of float
+            [x, y, z] in Angstrom of the evaluation point.
+        charge_range : list or range
+            Atom indices to include in the calculation.
+        xyz_file : str
+            Path to the XYZ structure file.
+        atom_multipole_file : str
+            Path to the multipole file.
+        df_ptchg : pd.DataFrame or None
+            Optional pre-loaded point charge dataframe.
+
+        Returns
+        -------
+        list
+            [E_vec (V/Angstrom), position_vec (m), atom_wise_contributions (V/Angstrom)]
+        """
+        df = Geometry(xyz_file).getGeomInfo()
+        xs = df['X']
+        ys = df['Y']
+        zs = df['Z']
+
+        xo, yo, zo = float(point[0]), float(point[1]), float(point[2])
+        position_vec = constants.ANGSTROM_TO_M * np.array([xo, yo, zo])
+        inv_eps = 1 / self.config['dielectric']
+
+        if self.config['includePtChgs'] and df_ptchg is None:
+            df_ptchg = self.getPtChgs(self.config['ptChgfp'])
+
+        lst_multipole_dict = MultiwfnInterface.getmultipoles(atom_multipole_file)
+        multipole_dict_by_idx = {idx: atom for idx, atom in enumerate(lst_multipole_dict)}
+        multipole_chg_range = [i for i in range(len(lst_multipole_dict)) if i in charge_range]
+
+        Ex, Ey, Ez = 0, 0, 0
+        multipole_Efield_contribution = []
+
+        for idx in multipole_chg_range:
+            atom_dict = multipole_dict_by_idx[idx]
+            dipole_vec = constants.BOHR_TO_M * np.array(atom_dict["Dipole_Moment"])
+            dist_vec = constants.ANGSTROM_TO_M * np.array([(xs[idx] - xo), (ys[idx] - yo), (zs[idx] - zo)])
+            quadrupole_arr = constants.BOHR_TO_M * constants.BOHR_TO_M * atom_dict['Quadrupole_Moment']
+
+            r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                 ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                 ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2)**0.5
+            if r < 1e-12:
+                multipole_Efield_contribution.append([0.0, 0.0, 0.0])
+                continue
+
+            r_squared = r**2
+            E_monopole_atomic = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * atom_dict["Atom_Charge"] * (1 / r**3) * dist_vec
+
+            mu_dot_r = np.dot(dipole_vec, dist_vec)
+            E_dipole_atomic = inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * (1 / r**5) * (3 * mu_dot_r * dist_vec - r_squared * dipole_vec)
+
+            Qr = np.dot(quadrupole_arr, dist_vec)
+            rTQr = np.dot(dist_vec, Qr)
+            E_quad_atomic = inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * (1 / (2 * r**7)) * (5 * rTQr * dist_vec - 2 * r_squared * Qr)
+
+            E_atomic_contrib_vec = E_monopole_atomic + E_dipole_atomic + E_quad_atomic
+            Ex += E_atomic_contrib_vec[0]
+            Ey += E_atomic_contrib_vec[1]
+            Ez += E_atomic_contrib_vec[2]
+            multipole_Efield_contribution.append(E_atomic_contrib_vec.tolist())
+
+        E_vec = [Ex, Ey, Ez]
+
+        if self.config['includePtChgs']:
+            MM_xs = list(df_ptchg['x'])
+            MM_ys = list(df_ptchg['y'])
+            MM_zs = list(df_ptchg['z'])
+            MM_charges = np.array(list(df_ptchg['charge'])) * (1 / math.sqrt(self.config['dielectric_scale']))
+            for chg_idx in range(len(MM_xs)):
+                r = (((MM_xs[chg_idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                     ((MM_ys[chg_idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                     ((MM_zs[chg_idx] - zo)*constants.ANGSTROM_TO_M)**2)**0.5
+                if r < 1e-12:
+                    multipole_Efield_contribution.append([0.0, 0.0, 0.0])
+                    continue
+                dist_vec = constants.ANGSTROM_TO_M * np.array([(MM_xs[chg_idx] - xo), (MM_ys[chg_idx] - yo), (MM_zs[chg_idx] - zo)])
+                E_to_add = -inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * MM_charges[chg_idx] * (1 / r**3) * dist_vec
+                E_vec[0] += E_to_add[0]
+                E_vec[1] += E_to_add[1]
+                E_vec[2] += E_to_add[2]
+                multipole_Efield_contribution.append(E_to_add)
+
+        return [constants.VM_TO_VA * np.array(E_vec), position_vec, constants.VM_TO_VA * np.array(multipole_Efield_contribution)]
 
     def multipole_esp(self, xyzfilepath, atom_multipole_file, charge_range, idx_atom, ptchg_path=None):
         '''
@@ -1936,6 +2153,114 @@ Correct usage:
         E_proj_atomwise = E_proj_atomwise_list[-1] if E_proj_atomwise_list else None
         return [E_projected, bonded_atoms, bond_indices, bond_lens, E_proj_atomwise, E_proj_atomwise_list]
 
+    def vectorEfield(self, vector_points, xyz_filepath, atom_multipole_file, all_lines, bool_multipole, df_ptchg=None):
+        """Compute E-field projected along vectors defined by pairs of Cartesian points.
+
+        Like bondEfield(), but the projection axis is defined by explicit Cartesian
+        coordinates rather than atom indices. E-field is evaluated at both endpoints,
+        averaged, then projected along the A→B unit vector.
+
+        Parameters
+        ----------
+        vector_points : list of tuples
+            List of ((x1,y1,z1), (x2,y2,z2)) pairs in Angstrom. Each pair defines a
+            vector from point A to point B.
+        xyz_filepath : str
+            Path to XYZ structure file.
+        atom_multipole_file : str
+            Path to charge or multipole file.
+        all_lines : list
+            Atom indices to include in the calculation.
+        bool_multipole : bool
+            If True, use multipole expansion; if False, use monopole charges.
+        df_ptchg : pd.DataFrame or None
+            Optional pre-loaded point charge dataframe.
+
+        Returns
+        -------
+        list
+            [E_projected, vector_labels, vector_points, vector_lens,
+             E_proj_atomwise, E_proj_atomwise_list]
+        """
+        E_projected = []
+        vector_labels = []
+        vector_lens = []
+        E_proj_atomwise_list = []
+
+        if bool_multipole:
+            for pointA, pointB in vector_points:
+                pointA = np.array(pointA, dtype=float)
+                pointB = np.array(pointB, dtype=float)
+                [A_E, A_pos, A_atomwise] = self.multipole_pointEfield(pointA, all_lines, xyz_filepath, atom_multipole_file, df_ptchg=df_ptchg)
+                [B_E, B_pos, B_atomwise] = self.multipole_pointEfield(pointB, all_lines, xyz_filepath, atom_multipole_file, df_ptchg=df_ptchg)
+                vec_unnorm = pointA - pointB
+                vec_len = np.linalg.norm(vec_unnorm)
+                vec_norm = vec_unnorm / vec_len
+                E_proj = (1/2) * np.dot(np.array(A_E) + np.array(B_E), vec_norm)
+                E_projected.append(E_proj)
+                vector_labels.append((tuple(pointA.tolist()), tuple(pointB.tolist())))
+                vector_lens.append(vec_len)
+                E_proj_atomwise = (1/2) * (np.array(A_atomwise) + np.array(B_atomwise)) @ vec_norm.T
+                E_proj_atomwise_list.append(E_proj_atomwise)
+        else:
+            for pointA, pointB in vector_points:
+                pointA = np.array(pointA, dtype=float)
+                pointB = np.array(pointB, dtype=float)
+                [A_E, A_pos, A_atomwise] = self.monopole_pointEfield(pointA, all_lines, atom_multipole_file, df_ptchg=df_ptchg)
+                [B_E, B_pos, B_atomwise] = self.monopole_pointEfield(pointB, all_lines, atom_multipole_file, df_ptchg=df_ptchg)
+                vec_unnorm = pointA - pointB
+                vec_len = np.linalg.norm(vec_unnorm)
+                vec_norm = vec_unnorm / vec_len
+                E_proj = (1/2) * np.dot(np.array(A_E) + np.array(B_E), vec_norm)
+                E_projected.append(E_proj)
+                vector_labels.append((tuple(pointA.tolist()), tuple(pointB.tolist())))
+                vector_lens.append(vec_len)
+                E_proj_atomwise = (1/2) * ((np.array(A_atomwise) + np.array(B_atomwise)) @ vec_norm.T)
+                E_proj_atomwise_list.append(E_proj_atomwise)
+
+        E_proj_atomwise = E_proj_atomwise_list[-1] if E_proj_atomwise_list else None
+        return [E_projected, vector_labels, vector_points, vector_lens, E_proj_atomwise, E_proj_atomwise_list]
+
+    def vectorEfield_pointcharges(self, vector_points, df_charges, all_lines):
+        """Compute E-field projections along Cartesian point vectors using point charges only.
+
+        Parameters
+        ----------
+        vector_points : list of tuples
+            List of ((x1,y1,z1), (x2,y2,z2)) pairs in Angstrom.
+        df_charges : pd.DataFrame
+            DataFrame with columns: ['Atom', 'x', 'y', 'z', 'charge'].
+        all_lines : list
+            Atom indices to include in the calculation.
+
+        Returns
+        -------
+        list
+            [E_projected, vector_labels, vector_points, vector_lens,
+             E_proj_atomwise, E_proj_atomwise_list]
+        """
+        E_projected = []
+        vector_labels = []
+        vector_lens = []
+        E_proj_atomwise_list = []
+
+        for pointA, pointB in vector_points:
+            pointA = np.array(pointA, dtype=float)
+            pointB = np.array(pointB, dtype=float)
+            [A_E, A_pos, A_atomwise] = self.pointcharge_pointEfield(pointA, all_lines, df_charges)
+            [B_E, B_pos, B_atomwise] = self.pointcharge_pointEfield(pointB, all_lines, df_charges)
+            vec_unnorm = pointA - pointB
+            vec_len = np.linalg.norm(vec_unnorm)
+            vec_norm = vec_unnorm / vec_len
+            E_proj = (1/2) * np.dot(np.array(A_E) + np.array(B_E), vec_norm)
+            E_projected.append(E_proj)
+            vector_labels.append((tuple(pointA.tolist()), tuple(pointB.tolist())))
+            vector_lens.append(vec_len)
+            E_proj_atomwise = (1/2) * ((np.array(A_atomwise) + np.array(B_atomwise)) @ vec_norm.T)
+            E_proj_atomwise_list.append(E_proj_atomwise)
+
+        E_proj_atomwise = E_proj_atomwise_list[-1] if E_proj_atomwise_list else None
+        return [E_projected, vector_labels, vector_points, vector_lens, E_proj_atomwise, E_proj_atomwise_list]
 
     def esp_coord_shell(self, metal_idx, charge_file, path_to_xyz, n_shells=1):
         """Calculate ESP accounting for electrostatic contributions from n coordination shells.
@@ -3172,6 +3497,515 @@ Please verify the file exists or set the path to None for jobs without charges.
             return df, df_atomwise
 
         return df
+
+    def getEfield_vectorProjection(self, charge_types='Hirshfeld_I', Efielddata_filename='ef_vec',
+                                   multiwfn_path=None, multipole_bool=False,
+                                   input_vector_points=[], save_atomwise_decomposition=False,
+                                   dielectric=1, dielectric_scale=1, includePtChgs=None,
+                                   ptchg_paths=None, pdb_charge_paths=None):
+        """Compute E-field projected along user-defined vectors in Cartesian space.
+
+        Like getEfield(), but the projection axis is defined by explicit Cartesian
+        coordinates instead of atom pairs. This allows computing E-field projections
+        along any arbitrary vector in space, not just along chemical bonds.
+
+        The E-field is evaluated at both endpoints of each vector, averaged, then
+        projected along the A→B unit vector — matching the convention of getEfield().
+
+        Parameters
+        ----------
+        charge_types : str or list of str
+            Charge partitioning scheme. If a list is provided, only the first is used.
+        Efielddata_filename : str
+            Output CSV filename (without extension).
+        multiwfn_path : str
+            Path to Multiwfn executable.
+        multipole_bool : bool, optional
+            If True, use multipole expansion; if False, use monopole charges (default: False).
+        input_vector_points : list
+            One entry per job, each entry is a list of ((x1,y1,z1), (x2,y2,z2)) tuples
+            (in Angstrom) defining the projection vectors for that job.
+            Example for two jobs with one vector each::
+
+                [
+                    [((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))],   # job 0
+                    [((0.5, 0.5, 0.0), (0.5, 0.5, 1.0))],   # job 1
+                ]
+
+        save_atomwise_decomposition : bool, optional
+            If True, save per-atom E-field contributions to CSV (default: False).
+        dielectric : float, optional
+            Dielectric constant (default: 1).
+        dielectric_scale : float, optional
+            Scaling factor for point charges (default: 1).
+        includePtChgs : bool or None, optional
+            Override object-level includePtChgs setting. None uses object-level setting.
+        ptchg_paths : list of str or None, optional
+            Override point charge file paths (one per job).
+        pdb_charge_paths : str or list of str or None, optional
+            If provided, use partial charges from PDB B-factor columns only (no Multiwfn).
+
+        Returns
+        -------
+        pd.DataFrame or tuple of pd.DataFrame
+            If save_atomwise_decomposition=False: DataFrame with E-field results.
+            If save_atomwise_decomposition=True: (total_df, atomwise_df) tuple.
+
+        Examples
+        --------
+        >>> # Project along the x-axis at the origin for all jobs
+        >>> vectors = [((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))]
+        >>> ef_df = estat.getEfield_vectorProjection(
+        ...     'Hirshfeld_I', 'ef_vec', multiwfn_path,
+        ...     input_vector_points=[vectors, vectors]
+        ... )
+        """
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        use_pdb_charges = pdb_charge_paths is not None
+
+        if use_pdb_charges and multipole_bool:
+            raise ValueError("PDB charge mode supports monopole charges only. Set multipole_bool=False.")
+
+        if not input_vector_points:
+            raise ValueError("input_vector_points must be provided.")
+
+        if isinstance(charge_types, list):
+            if len(charge_types) > 1:
+                print(f"Warning: Multiple charge types provided. Using first: {charge_types[0]}")
+            charge_type = charge_types[0]
+        else:
+            charge_type = charge_types
+
+        if not use_pdb_charges:
+            if multipole_bool:
+                filtered_types = filter_charge_types_for_multipole(charge_type, context="getEfield_vectorProjection")
+                if not filtered_types:
+                    return pd.DataFrame()
+                charge_type = filtered_types[0]
+            else:
+                filtered_types = filter_charge_types_for_monopole(charge_type, context="getEfield_vectorProjection")
+                if not filtered_types:
+                    return pd.DataFrame()
+                charge_type = filtered_types[0]
+
+        self.config['dielectric'] = dielectric
+        self.config['dielectric_scale'] = dielectric_scale
+        list_of_file = self.lst_of_folders
+
+        owd = os.getcwd()
+        allspeciesdict = []
+        all_atomwise_data = []
+        counter = 0
+
+        for f in list_of_file:
+            try:
+                f = str(f)
+                results_dict = {}
+                file_path_xyz = self.xyz_paths[counter]
+
+                if not use_pdb_charges:
+                    total_lines = Electrostatics.mapcount(file_path_xyz)
+                    init_all_lines = range(0, total_lines - 2)
+                else:
+                    total_lines = None
+                    init_all_lines = None
+
+                exclude_atoms = self.config.get('excludeAtomfromEcalc', [])
+                if exclude_atoms and isinstance(exclude_atoms[0], (list, tuple, np.ndarray)):
+                    exclude_list = list(exclude_atoms[counter])
+                else:
+                    exclude_list = list(exclude_atoms) if hasattr(exclude_atoms, '__iter__') else []
+
+                if not use_pdb_charges:
+                    all_lines = [x for x in init_all_lines if x not in exclude_list]
+                else:
+                    all_lines = None
+
+                # Determine vector points for this job
+                if counter < len(input_vector_points):
+                    job_vectors = input_vector_points[counter]
+                    if not isinstance(job_vectors, list):
+                        job_vectors = [job_vectors]
+                else:
+                    job_vectors = []
+
+                if not job_vectors:
+                    print(f"Warning: No vector points for {f}, skipping")
+                    counter += 1
+                    continue
+
+                if not use_pdb_charges:
+                    molden_filename = os.path.basename(self.molden_paths[counter])
+                    xyz_filename = os.path.basename(self.xyz_paths[counter])
+                    comp_cost = self.multiwfn.partitionCharge(
+                        multipole_bool, f, multiwfn_path, charge_type, owd,
+                        molden_filename=molden_filename, xyz_filename=xyz_filename
+                    )
+                    if comp_cost == -1:
+                        print(f"Warning: Charge calculation failed for {f}")
+                        counter += 1
+                        continue
+                    file_path_multipole = f"{f}/Multipole{charge_type}.txt"
+                    file_path_charges = f"{f}/Charges{charge_type}.txt"
+                else:
+                    comp_cost = 0
+                    file_path_multipole = None
+                    file_path_charges = None
+
+                df_ptchg = None
+                should_include_ptchg = includePtChgs if includePtChgs is not None else self.config.get('includePtChgs', False)
+
+                if should_include_ptchg and not use_pdb_charges:
+                    if ptchg_paths is not None:
+                        if not isinstance(ptchg_paths, list):
+                            raise TypeError("ptchg_paths must be a list of paths or None values")
+                        if counter >= len(ptchg_paths):
+                            raise IndexError(f"Job index {counter} out of range for ptchg_paths (length {len(ptchg_paths)})")
+                        ptchg_path = ptchg_paths[counter]
+                        if ptchg_path is not None:
+                            ptchg_path = os.path.abspath(ptchg_path)
+                    else:
+                        ptchg_path = self._get_ptchg_path_for_job(counter, f, override_path=None)
+
+                    if ptchg_path is not None:
+                        if not os.path.exists(ptchg_path):
+                            raise FileNotFoundError(f"Point charge file not found: {ptchg_path}")
+                        df_ptchg = self.getPtChgs(ptchg_path)
+
+                path_to_pol = file_path_multipole if multipole_bool else file_path_charges
+
+                df_pdb_charges = None
+                if use_pdb_charges:
+                    if isinstance(pdb_charge_paths, list):
+                        if counter >= len(pdb_charge_paths):
+                            raise IndexError(f"Job index {counter} out of range for pdb_charge_paths")
+                        pdb_charge_path = pdb_charge_paths[counter]
+                    else:
+                        pdb_charge_path = pdb_charge_paths
+
+                    if pdb_charge_path is None:
+                        print(f"Warning: No PDB charge file for {f}, skipping")
+                        counter += 1
+                        continue
+
+                    pdb_charge_path = os.path.abspath(pdb_charge_path)
+                    if not os.path.exists(pdb_charge_path):
+                        raise FileNotFoundError(f"PDB charge file not found: {pdb_charge_path}")
+                    df_pdb_charges = self.getPdbCharges(pdb_charge_path)
+                    total_lines = len(df_pdb_charges) + 2
+                    init_all_lines = range(0, len(df_pdb_charges))
+                    all_lines = [x for x in init_all_lines if x not in exclude_list]
+
+                if use_pdb_charges:
+                    [proj_Efields, vector_labels, vec_pts, vec_lens, E_proj_atomwise,
+                     E_proj_atomwise_list] = self.vectorEfield_pointcharges(
+                        job_vectors, df_pdb_charges, all_lines
+                    )
+                else:
+                    [proj_Efields, vector_labels, vec_pts, vec_lens, E_proj_atomwise,
+                     E_proj_atomwise_list] = self.vectorEfield(
+                        job_vectors, file_path_xyz, path_to_pol, all_lines,
+                        multipole_bool, df_ptchg=df_ptchg
+                    )
+
+                results_dict['Max Eproj'] = max(abs(np.array(proj_Efields)))
+                results_dict['Projected_Efields V/Angstrom'] = proj_Efields
+                results_dict['Vector Point Pairs'] = vector_labels
+                results_dict['Vector Lengths (Angstrom)'] = vec_lens
+                results_dict['Comp Cost'] = comp_cost
+                results_dict['Folder'] = f
+
+                if save_atomwise_decomposition and E_proj_atomwise_list:
+                    structure_name = os.path.basename(f.rstrip("/"))
+                    for vec_idx, (E_atomwise, vec_pair) in enumerate(zip(E_proj_atomwise_list, vector_labels)):
+                        for atom_idx in range(len(E_atomwise)):
+                            all_atomwise_data.append({
+                                'Structure': structure_name,
+                                'Vector_Index': vec_idx,
+                                'Vector_Points': f"{vec_pair[0]}-{vec_pair[1]}",
+                                'Atom_Index': atom_idx,
+                                'Efield_Contribution_V_per_A': E_atomwise[atom_idx],
+                                'Charge_Type': charge_type
+                            })
+
+                allspeciesdict.append(results_dict)
+                counter += 1
+
+            except Exception as e:
+                print(f"Error processing {f}: {e}")
+                logging.exception('Exception during vector E-field calculation')
+                counter += 1
+                continue
+
+        os.chdir(owd)
+        df = pd.DataFrame(allspeciesdict)
+
+        prefix = "multipole_" if multipole_bool else ""
+        auto_filename = f"ef_vec_{prefix}{charge_type}"
+        base_filename = auto_filename if Efielddata_filename in ['output', 'efield', 'ef_vec', 'Efielddata'] else Efielddata_filename
+
+        main_csv = f"{base_filename}.csv"
+        df.to_csv(main_csv)
+        print(f"Saved E-field results to: {main_csv}")
+
+        if save_atomwise_decomposition and all_atomwise_data:
+            df_atomwise = pd.DataFrame(all_atomwise_data)
+            atomwise_csv = f"{base_filename}_atomwise.csv"
+            df_atomwise.to_csv(atomwise_csv, index=False)
+            print(f"Saved atomwise E-field decomposition to: {atomwise_csv}")
+            return df, df_atomwise
+
+        return df
+
+    def getDipoleDifference(self, charge_types='Hirshfeld_I', multiwfn_path=None,
+                            output_filename='dipole_diff', align_heavy_only=True,
+                            align_indices=None, pdb_charge_paths=None,
+                            save_aligned_xyz=True):
+        """Compute the difference dipole vector between two molecular structures.
+
+        Kabsch-aligns the second structure onto the first (minimizing RMSD), then
+        computes the partial-charge dipole vector for both in the common aligned
+        frame. The difference dipole Δμ = μ₂ − μ₁ describes the direction in which
+        the charge distribution shifts between the two states.
+
+        Requires exactly two jobs in the Electrostatics object (one per structure).
+
+        Parameters
+        ----------
+        charge_types : str or list of str, optional
+            Charge partitioning scheme. If a list, only the first is used.
+            Default: 'Hirshfeld_I'.
+        multiwfn_path : str or None
+            Path to Multiwfn executable. Not needed when pdb_charge_paths is set.
+        output_filename : str, optional
+            Base name for output CSV (default: 'dipole_diff').
+        align_heavy_only : bool, optional
+            If True (default), use only non-hydrogen atoms for Kabsch alignment.
+            Ignored when align_indices is specified.
+        align_indices : array-like or None, optional
+            Explicit 0-based atom indices to use for alignment.
+            Overrides align_heavy_only when provided.
+        pdb_charge_paths : list of str or None, optional
+            If provided, read partial charges from PDB B-factor columns instead of
+            running Multiwfn. Must be a list of two paths, one per job.
+        save_aligned_xyz : bool, optional
+            If True (default), save the aligned structure 2 as an XYZ file
+            in structure 1's coordinate frame (useful for visualization).
+
+        Returns
+        -------
+        dict with keys:
+            'dipole_1'               : np.ndarray (3,), μ₁ in Debye
+            'dipole_2_aligned'       : np.ndarray (3,), μ₂ in Debye (aligned to struct 1)
+            'delta_dipole'           : np.ndarray (3,), Δμ = μ₂ − μ₁ in Debye
+            'delta_dipole_magnitude' : float, |Δμ| in Debye
+            'delta_dipole_direction' : np.ndarray (3,), unit vector of Δμ
+            'rotation_matrix'        : np.ndarray (3,3), Kabsch rotation (struct 2 → struct 1)
+            'rmsd'                   : float, RMSD after alignment in Angstrom
+            'charge_type'            : str
+            'xyz_1'                  : str
+            'xyz_2'                  : str
+
+        Also saves:
+            - ``{output_filename}.csv`` — scalar results
+            - ``{output_filename}_struct2_aligned.xyz`` (if save_aligned_xyz=True)
+
+        Notes
+        -----
+        Dipoles are computed relative to each structure's geometric centroid, making
+        them origin-independent for neutral molecules. For charged systems the dipole
+        is origin-dependent; the centroid convention is used throughout.
+
+        Examples
+        --------
+        >>> estat = Electrostatics(
+        ...     molden_paths=['state1.molden', 'state2.molden'],
+        ...     xyz_paths=['state1.xyz', 'state2.xyz']
+        ... )
+        >>> result = estat.getDipoleDifference('Hirshfeld_I', '/path/to/multiwfn')
+        >>> print(result['delta_dipole_direction'])   # unit vector of charge shift
+        >>> print(result['delta_dipole_magnitude'])   # |Δμ| in Debye
+        """
+        from .normal_mode import kabsch_rotation
+
+        if len(self.lst_of_folders) < 2:
+            raise ValueError(
+                "getDipoleDifference requires at least two jobs in the Electrostatics object "
+                "(first two are used as the pair to compare)."
+            )
+
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        use_pdb_charges = pdb_charge_paths is not None
+
+        if isinstance(charge_types, list):
+            charge_type = charge_types[0]
+        else:
+            charge_type = charge_types
+
+        if not use_pdb_charges:
+            filtered = filter_charge_types_for_monopole(charge_type, context="getDipoleDifference")
+            if not filtered:
+                raise ValueError(f"Unsupported charge type for monopole: {charge_type}")
+            charge_type = filtered[0]
+
+        xyz_path_1 = self.xyz_paths[0]
+        xyz_path_2 = self.xyz_paths[1]
+
+        # --- Read coordinates ---
+        df_geom_1 = Geometry(xyz_path_1).getGeomInfo()
+        df_geom_2 = Geometry(xyz_path_2).getGeomInfo()
+
+        if len(df_geom_1) != len(df_geom_2):
+            raise ValueError(
+                f"Both structures must have the same number of atoms for a meaningful "
+                f"dipole difference. Structure 1: {len(df_geom_1)} atoms, "
+                f"structure 2: {len(df_geom_2)} atoms."
+            )
+
+        coords_1 = df_geom_1[['X', 'Y', 'Z']].to_numpy(dtype=float)
+        coords_2 = df_geom_2[['X', 'Y', 'Z']].to_numpy(dtype=float)
+        atom_symbols = list(df_geom_1['Atom'])
+        n_atoms = len(atom_symbols)
+
+        # --- Determine alignment indices ---
+        if align_indices is not None:
+            fit_indices = np.asarray(align_indices, dtype=int)
+        elif align_heavy_only:
+            fit_indices = np.array(
+                [i for i, a in enumerate(atom_symbols)
+                 if constants.PERIODIC_TABLE.get(a, 1) > 1],
+                dtype=int
+            )
+            if len(fit_indices) == 0:
+                print("Warning: No heavy atoms found; using all atoms for alignment.")
+                fit_indices = np.arange(n_atoms, dtype=int)
+        else:
+            fit_indices = np.arange(n_atoms, dtype=int)
+
+        # --- Kabsch alignment: superpose structure 2 onto structure 1 ---
+        centroid_1 = coords_1.mean(axis=0)
+        centroid_2 = coords_2.mean(axis=0)
+        coords_1_c = coords_1 - centroid_1   # structure 1 centroid-centred
+        coords_2_c = coords_2 - centroid_2   # structure 2 centroid-centred
+
+        # kabsch_rotation(P, Q) returns R such that P @ R.T ≈ Q
+        # Align structure 2 onto structure 1: P = struct2 subset, Q = struct1 subset
+        R = kabsch_rotation(coords_2_c[fit_indices], coords_1_c[fit_indices])
+        coords_2_aligned = coords_2_c @ R.T   # all atoms of structure 2, aligned
+
+        # RMSD over fit atoms
+        diff = coords_1_c[fit_indices] - coords_2_aligned[fit_indices]
+        rmsd = float(np.sqrt(np.mean(np.sum(diff**2, axis=1))))
+        print(f"Kabsch alignment RMSD: {rmsd:.4f} Å  ({len(fit_indices)} atoms used)")
+
+        # --- Compute partial charges ---
+        owd = os.getcwd()
+
+        def _get_charges_for_job(job_idx):
+            folder = str(self.lst_of_folders[job_idx])
+            if use_pdb_charges:
+                pdb_path = (pdb_charge_paths[job_idx]
+                            if isinstance(pdb_charge_paths, list)
+                            else pdb_charge_paths)
+                df_chg = self.getPdbCharges(os.path.abspath(pdb_path))
+                return df_chg['charge'].reset_index(drop=True).to_numpy(dtype=float)
+            else:
+                molden_filename = os.path.basename(self.molden_paths[job_idx])
+                xyz_filename = os.path.basename(self.xyz_paths[job_idx])
+                rc = self.multiwfn.partitionCharge(
+                    False, folder, multiwfn_path, charge_type, owd,
+                    molden_filename=molden_filename, xyz_filename=xyz_filename
+                )
+                if rc == -1:
+                    raise RuntimeError(f"Charge partitioning failed for job {job_idx}")
+                charge_file = f"{folder}/Charges{charge_type}.txt"
+                df_chg = pd.read_csv(charge_file, sep='\s+',
+                                     names=["Atom", 'x', 'y', 'z', "charge"])
+                return df_chg['charge'].to_numpy(dtype=float)
+
+        charges_1 = _get_charges_for_job(0)
+        charges_2 = _get_charges_for_job(1)
+        os.chdir(owd)
+
+        # --- Dipole vectors (e·Å → Debye, relative to each structure's centroid) ---
+        # After alignment both are centred at origin, so the origin is consistent.
+        convert_Debye = 4.80320427   # e·Å → Debye
+        dipole_1 = convert_Debye * np.sum(coords_1_c * charges_1[:, np.newaxis], axis=0)
+        dipole_2 = convert_Debye * np.sum(coords_2_aligned * charges_2[:, np.newaxis], axis=0)
+
+        delta_dipole = dipole_2 - dipole_1
+        delta_mag = float(np.linalg.norm(delta_dipole))
+        delta_dir = delta_dipole / delta_mag if delta_mag > 1e-10 else np.zeros(3)
+
+        # --- Print summary ---
+        mu1_mag = float(np.linalg.norm(dipole_1))
+        mu2_mag = float(np.linalg.norm(dipole_2))
+        print(f"\n{'='*62}")
+        print(f"  Dipole Difference Analysis")
+        print(f"{'='*62}")
+        print(f"  Structure 1 : {xyz_path_1}")
+        print(f"  Structure 2 : {xyz_path_2}")
+        print(f"  Charge type : {charge_type}")
+        print(f"  Alignment   : {len(fit_indices)} atoms, RMSD = {rmsd:.4f} Å")
+        print(f"\n  μ₁ = [{dipole_1[0]:+.4f}, {dipole_1[1]:+.4f}, {dipole_1[2]:+.4f}]  "
+              f"|μ₁| = {mu1_mag:.4f} D")
+        print(f"  μ₂ = [{dipole_2[0]:+.4f}, {dipole_2[1]:+.4f}, {dipole_2[2]:+.4f}]  "
+              f"|μ₂| = {mu2_mag:.4f} D")
+        print(f"\n  Δμ = μ₂−μ₁ = [{delta_dipole[0]:+.4f}, {delta_dipole[1]:+.4f}, "
+              f"{delta_dipole[2]:+.4f}]  |Δμ| = {delta_mag:.4f} D")
+        print(f"  Direction of Δμ : [{delta_dir[0]:+.4f}, {delta_dir[1]:+.4f}, "
+              f"{delta_dir[2]:+.4f}]")
+        print(f"{'='*62}\n")
+
+        # --- Save aligned structure 2 XYZ (in structure 1's coordinate frame) ---
+        if save_aligned_xyz:
+            aligned_xyz_path = f"{output_filename}_struct2_aligned.xyz"
+            # Translate back so struct 2 sits in struct 1's original frame
+            coords_2_in_frame1 = coords_2_aligned + centroid_1
+            with open(aligned_xyz_path, 'w') as fh:
+                fh.write(f"{n_atoms}\n")
+                fh.write(f"Structure 2 aligned onto structure 1 (Kabsch, RMSD={rmsd:.4f} A)\n")
+                for sym, (x, y, z) in zip(df_geom_2['Atom'], coords_2_in_frame1):
+                    fh.write(f"{sym}  {x:.6f}  {y:.6f}  {z:.6f}\n")
+            print(f"Saved aligned structure 2 to: {aligned_xyz_path}")
+
+        # --- Save CSV ---
+        df_out = pd.DataFrame([{
+            'xyz_1': xyz_path_1,
+            'xyz_2': xyz_path_2,
+            'charge_type': charge_type,
+            'n_align_atoms': len(fit_indices),
+            'rmsd_angstrom': rmsd,
+            'mu1_x_D': dipole_1[0], 'mu1_y_D': dipole_1[1], 'mu1_z_D': dipole_1[2],
+            'mu1_mag_D': mu1_mag,
+            'mu2_x_D': dipole_2[0], 'mu2_y_D': dipole_2[1], 'mu2_z_D': dipole_2[2],
+            'mu2_mag_D': mu2_mag,
+            'delta_mu_x_D': delta_dipole[0],
+            'delta_mu_y_D': delta_dipole[1],
+            'delta_mu_z_D': delta_dipole[2],
+            'delta_mu_mag_D': delta_mag,
+            'delta_dir_x': delta_dir[0],
+            'delta_dir_y': delta_dir[1],
+            'delta_dir_z': delta_dir[2],
+        }])
+        csv_path = f"{output_filename}.csv"
+        df_out.to_csv(csv_path, index=False)
+        print(f"Saved dipole difference results to: {csv_path}")
+
+        return {
+            'dipole_1': dipole_1,
+            'dipole_2_aligned': dipole_2,
+            'delta_dipole': delta_dipole,
+            'delta_dipole_magnitude': delta_mag,
+            'delta_dipole_direction': delta_dir,
+            'rotation_matrix': R,
+            'rmsd': rmsd,
+            'charge_type': charge_type,
+            'xyz_1': xyz_path_1,
+            'xyz_2': xyz_path_2,
+        }
 
     def getCharges(self, charge_types='Hirshfeld_I', multiwfn_path=None, output_filename='charges',
                    write_pdb=False, pdb_bfactor=True):
