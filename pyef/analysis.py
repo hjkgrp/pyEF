@@ -1119,12 +1119,16 @@ Correct usage:
         Returns
         -------
         pd.DataFrame
-            DataFrame with columns: ['Atom', 'charge', 'x', 'y', 'z']
+            DataFrame with columns: ['Atom', 'charge', 'x', 'y', 'z', 'ResName'].
+            Row position equals the 0-indexed atom index used throughout pyEF
+            (e.g. in input_bond_indices, exclude_atoms, esp_atom_idx).
 
         Notes
         -----
         Reads ATOM/HETATM records and parses fixed-width PDB columns.
         The B-factor column is interpreted as the partial charge (e).
+        'ResName' is the standard PDB residue name field (columns 18-20) and is
+        used by getEfield_byResidue()/getESP_byResidue() to group atoms.
         """
         rows = []
         with open(pdb_path, "r") as handle:
@@ -1153,7 +1157,8 @@ Correct usage:
                 atom = line[76:78].strip()
                 if not atom:
                     atom = line[12:16].strip()
-                rows.append({"Atom": atom, "x": x, "y": y, "z": z, "charge": charge})
+                resname = line[17:20].strip()
+                rows.append({"Atom": atom, "x": x, "y": y, "z": z, "charge": charge, "ResName": resname})
 
         if not rows:
             raise ValueError(f"No ATOM/HETATM records found in PDB: {pdb_path}")
@@ -1502,6 +1507,50 @@ Correct usage:
 
         E_vec = [Ex, Ey, Ez]
         return [constants.VM_TO_VA*np.array(E_vec), position_vec, df_charges['Atom'][idx_atom], constants.VM_TO_VA*np.array(atom_wise_additions)]
+
+    def pointcharge_atomicESP(self, espatom_idx, charge_range, df_charges):
+        """Calculate ESP at an atom using point charges, with atom-wise contributions.
+
+        ESP equivalent of pointcharge_atomicEfield(): same total value as
+        monopole_esp_df(), but additionally returns the contribution of each
+        individual atom so they can be summed per residue group.
+
+        Parameters
+        ----------
+        espatom_idx : int
+            Atom index (0-indexed) at which the ESP is calculated.
+        charge_range : list or range
+            Atom indices to include in the ESP sum.
+        df_charges : pd.DataFrame
+            DataFrame with columns: ['Atom', 'x', 'y', 'z', 'charge'].
+
+        Returns
+        -------
+        list
+            [ESP (float, Volts), atom_symbol (str), atomwise_contributions (np.ndarray, Volts)]
+        """
+        inv_eps = 1 / self.config['dielectric']
+        charge_range = set(charge_range)
+
+        atoms = df_charges['Atom'].values
+        charges = df_charges['charge'].values
+        xs = df_charges['x'].values
+        ys = df_charges['y'].values
+        zs = df_charges['z'].values
+
+        idx_atom = espatom_idx
+        xo, yo, zo = xs[idx_atom], ys[idx_atom], zs[idx_atom]
+
+        atomwise = np.zeros(len(xs))
+        for idx in range(len(xs)):
+            if idx == idx_atom or idx not in charge_range:
+                continue
+            r = (((xs[idx] - xo)*constants.ANGSTROM_TO_M)**2 +
+                 ((ys[idx] - yo)*constants.ANGSTROM_TO_M)**2 +
+                 ((zs[idx] - zo)*constants.ANGSTROM_TO_M)**2) ** 0.5
+            atomwise[idx] = inv_eps * constants.COULOMB_CONSTANT * constants.ELEMENTARY_CHARGE * (charges[idx] / r)
+
+        return [float(np.sum(atomwise)), atoms[idx_atom], atomwise]
 
     def monopole_pointEfield(self, point, charge_range, charge_file, df_ptchg=None):
         """Compute E-field at an arbitrary Cartesian point using monopole charges.
@@ -3496,6 +3545,325 @@ Please verify the file exists or set the path to None for jobs without charges.
             print(f"Saved atomwise E-field decomposition to: {atomwise_csv}")
             return df, df_atomwise
 
+        return df
+
+    @staticmethod
+    def _residueGroupLabels(df_pdb_charges, residue_groups, other_label='Other',
+                             unmatched_resnames=None, track_indices=None):
+        """Map each atom (row of df_pdb_charges) to a residue-group label.
+
+        Parameters
+        ----------
+        df_pdb_charges : pd.DataFrame
+            Output of getPdbCharges(); must include a 'ResName' column.
+        residue_groups : dict
+            {group_name: [resname, resname, ...]}. PDB residue names (e.g. 'MOL',
+            'PD1') are matched verbatim, so they must match the ResName field
+            exactly (case-sensitive, as written in the PDB file).
+        other_label : str or None, optional
+            Label assigned to atoms whose residue name is not listed in any
+            group. If None, such atoms are mapped to None and excluded by
+            callers (default: 'Other').
+        unmatched_resnames : set or None, optional
+            If provided, unmatched residue names are added to this set so the
+            caller can warn about them once.
+        track_indices : iterable of int or None, optional
+            Atom indices to consider when populating unmatched_resnames (e.g. the
+            calculation's all_lines, so excluded atoms don't trigger spurious
+            warnings). If None, all atoms are considered (default: None).
+
+        Returns
+        -------
+        list of str
+            Group label for each atom, in the same order/index as df_pdb_charges
+            (i.e. group_labels[i] is the group for atom index i).
+        """
+        resname_to_group = {}
+        for group_name, resnames in residue_groups.items():
+            for resname in resnames:
+                resname_to_group[resname] = group_name
+
+        track_set = set(track_indices) if track_indices is not None else None
+
+        labels = []
+        for atom_idx, resname in enumerate(df_pdb_charges['ResName']):
+            group = resname_to_group.get(resname)
+            if group is None:
+                if unmatched_resnames is not None and (track_set is None or atom_idx in track_set):
+                    unmatched_resnames.add(resname)
+                group = other_label
+            labels.append(group)
+        return labels
+
+    def getEfield_byResidue(self, residue_groups, input_bond_indices, exclude_atoms=None,
+                             dielectric=1, pdb_charge_paths=None,
+                             output_filename='ef_byresidue', other_label='Other'):
+        """Decompose bond-projected E-field contributions by PDB residue name.
+
+        Computes the same bond-projected E-field as getEfield(..., pdb_charge_paths=...),
+        but instead of returning one value per bond, sums the atom-wise contributions
+        within each user-defined group of residues (e.g. metal centers, ligands,
+        counterions, solvent) so the source of the field can be attributed.
+
+        This method only supports PDB B-factor charges (pdb_only mode), since residue
+        names are read from the PDB 'ResName' field.
+
+        Parameters
+        ----------
+        residue_groups : dict
+            {group_name: [resname, resname, ...]}. Maps each group label to the list
+            of PDB residue names (as written in the PDB ResName field) that belong to
+            it. Example: {'Metal': ['PD1', 'PD2'], 'Solvent': ['MOL']}.
+        input_bond_indices : list of list of tuple
+            Bond indices per job: input_bond_indices[j] is a list of (atomA_idx,
+            atomB_idx) tuples (0-indexed) for job j.
+        exclude_atoms : list of int, or list of list of int, optional
+            Atom indices to exclude entirely from the E-field calculation (e.g. the
+            solute/guest whose own field contribution shouldn't count). A flat list
+            applies to every job; a list of lists gives per-job exclusions
+            (default: None).
+        dielectric : float, optional
+            Dielectric constant (default: 1).
+        pdb_charge_paths : str or list of str or None, optional
+            PDB file path(s) with charges in the B-factor column, one per job.
+            If None, uses the object-level pdb_charge_paths (pdb_only mode).
+        output_filename : str, optional
+            Output CSV filename without extension (default: 'ef_byresidue').
+        other_label : str or None, optional
+            Label for atoms whose residue name isn't listed in residue_groups.
+            If None, unmatched atoms are dropped from the output (default: 'Other').
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (Structure, Bond, Group) with columns:
+            ['Structure', 'Bond', 'AtomA_idx', 'AtomB_idx', 'Group', 'N_atoms',
+            'Efield_V_per_A', 'Efield_MV_per_cm'].
+
+        Examples
+        --------
+        >>> es = Electrostatics(pdb_charge_paths=['frame1.pdb', 'frame2.pdb'])
+        >>> df = es.getEfield_byResidue(
+        ...     residue_groups={'Metal': ['PD1', 'PD2'], 'Solvent': ['MOL']},
+        ...     input_bond_indices=[[(10, 11)], [(10, 11)]],
+        ...     exclude_atoms=[0, 1, 2],
+        ... )
+        """
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        if pdb_charge_paths is None:
+            raise ValueError(
+                "getEfield_byResidue requires PDB charge files so atoms can be grouped "
+                "by residue name. Construct Electrostatics with pdb_charge_paths=[...] "
+                "(pdb_only mode), or pass pdb_charge_paths explicitly."
+            )
+        if not isinstance(pdb_charge_paths, list):
+            pdb_charge_paths = [pdb_charge_paths]
+        if not residue_groups:
+            raise ValueError("residue_groups must be a non-empty dict of {group_name: [resnames]}")
+
+        self.config['dielectric'] = dielectric
+        group_names = list(residue_groups.keys()) + ([other_label] if other_label else [])
+
+        rows = []
+        unmatched_resnames = set()
+
+        for counter, pdb_path in enumerate(pdb_charge_paths):
+            if pdb_path is None:
+                print(f"Warning: No PDB charge file for job {counter}, skipping")
+                continue
+            pdb_path = os.path.abspath(pdb_path)
+            if not os.path.exists(pdb_path):
+                raise FileNotFoundError(f"PDB charge file not found: {pdb_path}")
+
+            df_pdb_charges = self.getPdbCharges(pdb_path)
+            n_atoms = len(df_pdb_charges)
+
+            if exclude_atoms and isinstance(exclude_atoms[0], (list, tuple, np.ndarray)):
+                exclude_list = list(exclude_atoms[counter]) if counter < len(exclude_atoms) else []
+            else:
+                exclude_list = list(exclude_atoms) if exclude_atoms else []
+            all_lines = [x for x in range(n_atoms) if x not in exclude_list]
+
+            if counter < len(input_bond_indices):
+                bond_indices_to_use = (input_bond_indices[counter]
+                                        if isinstance(input_bond_indices[counter], list)
+                                        else [input_bond_indices[counter]])
+            else:
+                bond_indices_to_use = []
+            if not bond_indices_to_use:
+                print(f"Warning: No bond indices for job {counter} ({os.path.basename(pdb_path)}), skipping")
+                continue
+
+            atom_group = self._residueGroupLabels(df_pdb_charges, residue_groups, other_label, unmatched_resnames, track_indices=all_lines)
+
+            [_, _, bonded_idx, _, _, E_proj_atomwise_list] = self.bondEfield_pointcharges(
+                bond_indices_to_use, df_pdb_charges, all_lines
+            )
+
+            structure_name = os.path.basename(pdb_path)
+            for bond_pair, E_atomwise in zip(bonded_idx, E_proj_atomwise_list):
+                group_sums = {g: 0.0 for g in group_names}
+                group_counts = {g: 0 for g in group_names}
+                for atom_idx in all_lines:
+                    g = atom_group[atom_idx]
+                    if g is None:
+                        continue
+                    group_sums[g] += E_atomwise[atom_idx]
+                    group_counts[g] += 1
+
+                for g in group_names:
+                    rows.append({
+                        'Structure': structure_name,
+                        'Bond': f"{bond_pair[0]}-{bond_pair[1]}",
+                        'AtomA_idx': bond_pair[0],
+                        'AtomB_idx': bond_pair[1],
+                        'Group': g,
+                        'N_atoms': group_counts[g],
+                        'Efield_V_per_A': group_sums[g],
+                        'Efield_MV_per_cm': group_sums[g] * 100.0,
+                    })
+
+        if unmatched_resnames:
+            print(f"Warning: {len(unmatched_resnames)} residue name(s) not listed in residue_groups, "
+                  f"grouped under '{other_label}': {sorted(unmatched_resnames)}")
+
+        df = pd.DataFrame(rows)
+        csv_path = f"{output_filename}.csv"
+        df.to_csv(csv_path, index=False)
+        print(f"Saved residue-decomposed E-field results to: {csv_path}")
+        return df
+
+    def getESP_byResidue(self, residue_groups, esp_atom_idx=None, exclude_atoms=None,
+                          dielectric=1, pdb_charge_paths=None,
+                          output_filename='esp_byresidue', other_label='Other'):
+        """Decompose ESP contributions at an atom by PDB residue name.
+
+        Computes the same monopole ESP as getESP(..., pdb_charge_paths=...) at each
+        specified atom, but sums the atom-wise contributions within each user-defined
+        group of residues (e.g. metal centers, ligands, counterions, solvent) so the
+        source of the potential can be attributed.
+
+        This method only supports PDB B-factor charges (pdb_only mode), since residue
+        names are read from the PDB 'ResName' field.
+
+        Parameters
+        ----------
+        residue_groups : dict
+            {group_name: [resname, resname, ...]}. Maps each group label to the list
+            of PDB residue names (as written in the PDB ResName field) that belong to
+            it. Example: {'Metal': ['PD1', 'PD2'], 'Solvent': ['MOL']}.
+        esp_atom_idx : list of int, or None, optional
+            Atom index (0-indexed) at which to evaluate the ESP, one per job. If None,
+            uses the object-level esp_atom_idx provided at construction (default: None).
+        exclude_atoms : list of int, or list of list of int, optional
+            Atom indices to exclude entirely from the ESP calculation. A flat list
+            applies to every job; a list of lists gives per-job exclusions
+            (default: None).
+        dielectric : float, optional
+            Dielectric constant (default: 1).
+        pdb_charge_paths : str or list of str or None, optional
+            PDB file path(s) with charges in the B-factor column, one per job.
+            If None, uses the object-level pdb_charge_paths (pdb_only mode).
+        output_filename : str, optional
+            Output CSV filename without extension (default: 'esp_byresidue').
+        other_label : str or None, optional
+            Label for atoms whose residue name isn't listed in residue_groups.
+            If None, unmatched atoms are dropped from the output (default: 'Other').
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (Structure, Group) with columns:
+            ['Structure', 'ESP_Atom_idx', 'ESP_Atom_symbol', 'Group', 'N_atoms', 'ESP_V'].
+
+        Examples
+        --------
+        >>> es = Electrostatics(pdb_charge_paths=['frame1.pdb', 'frame2.pdb'])
+        >>> df = es.getESP_byResidue(
+        ...     residue_groups={'Metal': ['PD1', 'PD2'], 'Solvent': ['MOL']},
+        ...     esp_atom_idx=[12, 12],
+        ...     exclude_atoms=[0, 1, 2],
+        ... )
+        """
+        if pdb_charge_paths is None and self.pdb_only:
+            pdb_charge_paths = self.pdb_charge_paths
+        if pdb_charge_paths is None:
+            raise ValueError(
+                "getESP_byResidue requires PDB charge files so atoms can be grouped "
+                "by residue name. Construct Electrostatics with pdb_charge_paths=[...] "
+                "(pdb_only mode), or pass pdb_charge_paths explicitly."
+            )
+        if not isinstance(pdb_charge_paths, list):
+            pdb_charge_paths = [pdb_charge_paths]
+        if not residue_groups:
+            raise ValueError("residue_groups must be a non-empty dict of {group_name: [resnames]}")
+
+        if esp_atom_idx is None:
+            esp_atom_idx = self.esp_atom_idx
+        if not esp_atom_idx:
+            raise ValueError(
+                "getESP_byResidue requires esp_atom_idx: the atom index (0-indexed) at "
+                "which to evaluate the ESP, either passed here or at construction."
+            )
+
+        self.config['dielectric'] = dielectric
+        group_names = list(residue_groups.keys()) + ([other_label] if other_label else [])
+
+        rows = []
+        unmatched_resnames = set()
+
+        for counter, pdb_path in enumerate(pdb_charge_paths):
+            if pdb_path is None:
+                print(f"Warning: No PDB charge file for job {counter}, skipping")
+                continue
+            pdb_path = os.path.abspath(pdb_path)
+            if not os.path.exists(pdb_path):
+                raise FileNotFoundError(f"PDB charge file not found: {pdb_path}")
+
+            df_pdb_charges = self.getPdbCharges(pdb_path)
+            n_atoms = len(df_pdb_charges)
+
+            if exclude_atoms and isinstance(exclude_atoms[0], (list, tuple, np.ndarray)):
+                exclude_list = list(exclude_atoms[counter]) if counter < len(exclude_atoms) else []
+            else:
+                exclude_list = list(exclude_atoms) if exclude_atoms else []
+            all_lines = [x for x in range(n_atoms) if x not in exclude_list]
+
+            atom_idx = esp_atom_idx[counter] if counter < len(esp_atom_idx) else esp_atom_idx[0]
+
+            atom_group = self._residueGroupLabels(df_pdb_charges, residue_groups, other_label, unmatched_resnames, track_indices=all_lines)
+
+            _, atom_symbol, atomwise = self.pointcharge_atomicESP(atom_idx, all_lines, df_pdb_charges)
+
+            structure_name = os.path.basename(pdb_path)
+            group_sums = {g: 0.0 for g in group_names}
+            group_counts = {g: 0 for g in group_names}
+            for a_idx in all_lines:
+                g = atom_group[a_idx]
+                if g is None:
+                    continue
+                group_sums[g] += atomwise[a_idx]
+                group_counts[g] += 1
+
+            for g in group_names:
+                rows.append({
+                    'Structure': structure_name,
+                    'ESP_Atom_idx': atom_idx,
+                    'ESP_Atom_symbol': atom_symbol,
+                    'Group': g,
+                    'N_atoms': group_counts[g],
+                    'ESP_V': group_sums[g],
+                })
+
+        if unmatched_resnames:
+            print(f"Warning: {len(unmatched_resnames)} residue name(s) not listed in residue_groups, "
+                  f"grouped under '{other_label}': {sorted(unmatched_resnames)}")
+
+        df = pd.DataFrame(rows)
+        csv_path = f"{output_filename}.csv"
+        df.to_csv(csv_path, index=False)
+        print(f"Saved residue-decomposed ESP results to: {csv_path}")
         return df
 
     def getEfield_vectorProjection(self, charge_types='Hirshfeld_I', Efielddata_filename='ef_vec',
