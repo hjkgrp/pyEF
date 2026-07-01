@@ -40,6 +40,7 @@ import math
 import time
 import basis_set_exchange as bse
 import json
+import shlex
 
 # ============================================================================
 # Physical Constants
@@ -782,7 +783,7 @@ class MultiwfnInterface:
                     # Dynamically get path to package settings.ini file
                     with resources.path('pyef.resources', 'settings.ini') as ini_path:
                         path_to_init_file = str(ini_path)
-                        command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
+                        command = f"{multiwfn_path} {shlex.quote(molden_filename)} -set {path_to_init_file}"
 
                         multiwfn_commands = ['15', '-1'] + self.dict_of_multipole[charge_type] + ['0', 'q']
                         num_atoms = self.count_atoms(final_structure_file)
@@ -816,7 +817,7 @@ class MultiwfnInterface:
                     # Dynamically get path to package settings.ini file
                     with resources.path('pyef.resources', 'settings.ini') as ini_path:
                         path_to_init_file = str(ini_path)
-                        command = f"{multiwfn_path} {molden_filename} -set {path_to_init_file}"
+                        command = f"{multiwfn_path} {shlex.quote(molden_filename)} -set {path_to_init_file}"
                         chg_prefix, _ = os.path.splitext(molden_filename)
                         calc_command = self.dict_of_calcs[charge_type]
                         # Default command for most charge types (Hirshfeld, Voronoi, ADCH, CM5)
