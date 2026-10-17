@@ -34,6 +34,7 @@ jobs:
           numpy \
           pandas \
           scipy \
+          pyyaml \
           pytest \
           pytest-cov \
           basis_set_exchange
