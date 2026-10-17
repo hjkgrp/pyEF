@@ -15,7 +15,7 @@ Note: This package is under active development as of 2026, if you encounter any 
 2. **Configuration Options (kwargs)**
 3. **Basic Usage**
 4. **PDB-Only Mode (No Multiwfn Required)**
-5. **ESP Profile on a Plane Through a Cage**
+5. **ESP Profile (2-D ESP Map)**
 
 ## 1. Installation
 
@@ -40,16 +40,18 @@ wget http://sobereva.com/multiwfn/misc/Multiwfn_3.8_bin_Linux_noGUI.zip
 unzip Multiwfn_3.8_bin_Linux_noGUI.zip 
 cd Multiwfn_3.8_bin_Linux_noGUI
 
-#give executable permission to the Multiwfn executable file
+# Give the Multiwfn executable permission to run
 chmod +x Multiwfn_noGUI
 ```
 
 **Add to your PATH (add to ~/.bashrc):**
 ```bash
-export PATH=/path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI:$PATH
+export PATH=/path/to/Multiwfn_3.8_bin_Linux_noGUI:$PATH
 ```
 
 Or use the full path when running PyEF (e.g., `multiwfn_path: /path/to/Multiwfn_3.8_bin_Linux_noGUI/Multiwfn_noGUI`).
+
+---
 
 ## 2. Configuration Options (kwargs)
 
@@ -93,6 +95,8 @@ es = Electrostatics(molden_paths, xyz_paths, hasECP=True, ECP="lacvps")
 | `visualize_charges` | bool | `False` | Create PDB files with partial charges |
 | `visualize_per_bond` | bool | `False` | Create separate PDB files per bond |
 
+---
+
 ## 3. Basic Usage
 
 ### Electric Field Calculation
@@ -117,26 +121,27 @@ pyef -c config.yaml
 
 **Python API:**
 ```python
+import numpy as np
 from pyef.analysis import Electrostatics
 
 molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
-xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
 
-#create an electrostatics object associated with the file structure
+# Create an Electrostatics object for the structures
 es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
 
-#Record the indices (0-index) for the bonds to project Efield across. Here I have one bond: (0, 10) in structure 1 and two bonds: (20, 21) and (25, 26) in structure 2
-ef_bond = [[(0, 10)], [(20, 21), (25, 26)]
+# Bonds (0-indexed) to project the E-field onto: one in structure 1, two in structure 2
+ef_bonds = [[(0, 10)], [(20, 21), (25, 26)]]
 
-#record indices of the substrate containing bonds of interest in structure 1, and structure 2
-sub_indices = [ np.arange(0,10), np.arange(10,25)]
+# Substrate atoms in structure 1 and structure 2
+sub_indices = [np.arange(0, 10), np.arange(10, 25)]
 
-#exclude substrates from Efield calc (here we are only probing impact of environmnet on bond, NOT intramolecular polarization)
+# Exclude the substrate from the sources: only the environment's field on the bond is measured
 es.setExcludeAtomFromCalc(sub_indices)
 
-#charge_types can be a list or single value like here
+# charge_types can be a list or a single value
 df = es.getEfield(charge_types='Hirshfeld_I', Efielddata_filename='output', multiwfn_path='/path/to/multiwfn',
-                  input_bond_indices=sub_indices)
+                  input_bond_indices=ef_bonds)
 ```
 
 ### Electrostatic Potential (ESP) Calculation
@@ -155,22 +160,15 @@ pyef -c config.yaml
 from pyef.analysis import Electrostatics
 
 molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
-xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
 
-# One atom index per file (0-indexed)
-metal_indices = [30, 0]  # atom 30 for structure1, atom 0 for structure2
+# One atom index per structure (0-indexed): atom 30 in structure 1, atom 0 in structure 2
+metal_indices = [30, 0]
 
-#name for csv data file that will record ESP data
-fn='espHirshfeldI'
-
-#pathway to the installation of the multiwfn install
-multiwfn_install = '/path/to/multiwfn'
-
-#create an electrostatics object
 es = Electrostatics(molden_paths, xyz_paths, esp_atom_idx=metal_indices, dielectric=1.0)
 
-#run electrostatic potential calculations on  all files in list
-df = es.getESP(charge_types=['Hirshfeld_I'], ESPdata_filename=fn, multiwfn_path=multiwfn_install)
+# ESP at those atoms for every structure, saved to espHirshfeldI.csv
+df = es.getESP(charge_types=['Hirshfeld_I'], ESPdata_filename='espHirshfeldI', multiwfn_path='/path/to/multiwfn')
 ```
 
 ### Electrostatic Stabilization Calculation
@@ -197,18 +195,20 @@ pyef -c config.yaml
 
 **Python API:**
 ```python
+import numpy as np
 from pyef.analysis import Electrostatics
 
 molden_paths = ['/path/to/structure1.molden', '/path/to/structure2.molden']
-xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz' ]
+xyz_paths = ['/path/to/structure1.xyz', '/path/to/structure2.xyz']
 
 es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
 
-#record indices of the substrate containins bonds of interest in structure 1, and structure 2
-sub_indices = [ np.arange(0,10), np.arange(10,25)]
+# Substrate atoms in structure 1 and structure 2
+sub_indices = [np.arange(0, 10), np.arange(10, 25)]
 
-#only Hirshfeld, Hirshfeld_I, and Becke are compatible with multipole_order=2. Otherwise will default to multipole_order=1
-df = es.getElectrostatic_stabilization(charge_types='Hirshfeld', multiwfn_path='/path/to/multiwfn', substrate_idxs=sub_indices, multipole_order=2)
+# multipole_order=2 needs Hirshfeld, Hirshfeld_I or Becke; other schemes fall back to 1
+df = es.getElectrostatic_stabilization(charge_type='Hirshfeld', multiwfn_path='/path/to/multiwfn',
+                                       substrate_idxs=sub_indices, multipole_order=2)
 ```
 
 ### Partial Charge Calculation
@@ -223,7 +223,7 @@ xyz_paths = ['/path/to/structure.xyz']
 es = Electrostatics(molden_paths, xyz_paths)
 
 # Get multiple charge types with PDB output for visualization
-df = es.getCharges(charge_types =['RESP', 'Hirshfeld_I'], multiwfn_path='/path/to/multiwfn',
+df = es.getCharges(charge_types=['RESP', 'Hirshfeld_I'], multiwfn_path='/path/to/multiwfn',
                    output_filename='my_charges', write_pdb=True)
 ```
 
@@ -246,7 +246,7 @@ df = es.getCharges(charge_types =['RESP', 'Hirshfeld_I'], multiwfn_path='/path/t
 | `SCPA` | Ros & Schuit modified Mulliken | Modified Mulliken scheme |
 | `Becke` | Becke partitioning with dipole correction | Real-space integration |
 | `EEM` | Electronegativity equalization | ⚠️ Requires bonded atoms (fails for ionic systems) |
-| `PEOE` | Gasteiger charges | ⚠️ Missing parameters for some elements (e.g., Na, transition metals)
+| `PEOE` | Gasteiger charges | ⚠️ Missing parameters for some elements (e.g., Na, transition metals) |
 
 **PDB visualization:** When `write_pdb=True`, creates PDB files with charges in the B-factor column. Visualize in PyMOL with:
 ```
@@ -261,8 +261,8 @@ Skip the QM workflow entirely by placing your partial charges in the **B-factor 
 
 **Electric Field:**
 ```python
-from pyef.analysis import Electrostatics
 import numpy as np
+from pyef.analysis import Electrostatics
 
 es = Electrostatics(pdb_charge_paths=['job1/charges.pdb', 'job2/charges.pdb'], dielectric=1.0)
 
@@ -285,101 +285,53 @@ df = es.getESP(ESPdata_filename='esp_pdb')
 es = Electrostatics(pdb_charge_paths=['job1/charges.pdb', 'job2/charges.pdb'], dielectric=1.0)
 
 df = es.getElectrostatic_stabilization(substrate_idxs=[np.arange(0, 10), np.arange(0, 10)],
-                                        name_dataStorage='estab_pdb')
+                                       name_dataStorage='estab_pdb')
 ```
 
-`pdb_charge_paths` can also be passed directly to any of the three calculation functions on a standard (molden/xyz) object to override charges for that call onl## 5. ESP Profile on a Plane Through a Cage
+`pdb_charge_paths` can also be passed directly to any of the three calculation functions on a standard (molden/xyz) object to override charges for that call only.
 
-Map the electrostatic potential on a plane through a cage (or any molecule)
-and plot it. Give one frame for a single-frame map, or many frames (e.g. QM/MM
-snapshots) to average them. Each frame gets its own plane before averaging, so
-the map follows the molecule.
+---
 
-It reads the files pyEF already makes: `Charges<type>.txt` (`sym x y z q`) and,
-optionally, a QM/MM `pointcharges.txt` (2 header lines, then `q x y z`). If the
-charges already exist, Multiwfn is not needed.
+## 5. ESP Profile (2-D ESP Map)
 
-**Automatic: one input file, only the frames are required.**
+Maps the ESP on a plane through three atoms and plots it. P1 → P2 is the vertical axis and P3 sets the plane; a range such as `2-34` stands for the centroid of those atoms (0-indexed). Several jobs are treated as frames of the same system and averaged into one map. Writes `<name>.svg`, `<name>.png` and `<name>.npz`.
+
+**CLI:**
 ```bash
-pyef espprofile --template > esp.yaml     # commented starter file (also demo/esp_profile.yaml)
-pyef espprofile -c esp.yaml               # or: python -m pyef.esp_profile -c esp.yaml
+# Create jobs.csv: plane through atoms 1 and 0 and the centroid of atoms 2-34
+echo "espprofile, /path/to/structure.molden, /path/to/structure.xyz, (1, 0, 2-34)" > jobs.csv
+
+# Run with same config.yaml
+pyef -c config.yaml
 ```
-```yaml
-charges: frames/*/ChargesCM5.txt    # one file, a list, or a glob; 1 file = single frame, >1 = averaged
-pointcharges: pointcharges.txt      # optional QM/MM charges, looked up next to each charge file
-cut: vertical                       # or horizontal
-esp_range: cavity                   # colour limits from the cage cavity (default); or [vmin, vmax] in V
-```
-The first frame's geometry is used to find:
-- **the metals:** the two d/f-block atoms;
-- **the ligands:** fragments bonded to a metal;
-- **the cage:** the metals plus their ligands;
-- **the guest:** everything else in the QM region.
 
-The run prints what it found, so you can check it. From this it sets:
-- **`plane: auto`:** the metal–metal axis plus the first ligand's centroid.
-- **`cut: vertical`:** the plane containing the M–M axis, with the horizontal axis toward ligand 1.
-- **`cut: horizontal`:** the plane perpendicular to the M–M axis through its midpoint, i.e. the equatorial slice. `offset: 2.0` slides either plane 2 Å along its normal.
-- **`extent: auto`:** a grid that holds the whole cage plus 2 Å (`extent_pad`).
-- **Default conditions:** `Cage` and `Cage_Env` (+ all point charges). The guest is not a source and is not drawn; add `All: all` to include it.
-- **No masking by default:** the colour limits come from the cage cavity (`esp_range: cavity`), so the metals, the walls and the nuclei saturate instead of stretching the scale. Charges closer than `r_min` (0.5 Å) to a grid point count as `r_min` away, so each nucleus saturates rather than leaving a hole.
-- **Plot:** the structure within 1.5 Å of the plane is drawn as white sticks, metals as white circles.
-
-**ESP:** `ESP (V) = 14.3996 / dielectric * Σ q/r`. Pairs closer than `r_min`
-(0.5 Å) are skipped.
-
-**Manual control:** set any of these yourself:
-- **`plane: [1, 0, 2-34]`:** P1, P2, P3 as 0-based atom indices, or groups whose centroid is used. The axis runs P1 → P2, and the horizontal axis points toward P3. This works for any molecule, not only cages.
-- **`origin`:** `centroid`, `midpoint`, an atom index or `[x, y, z]`.
-- **`extent`, `spacing`:** a number, or `[z, x]`.
-- **`conditions`**, written as tokens: `cage`, `guest`, `metals`, `qm`, `mm`, `all`, `qm:a-b`, `mm:a-b`, `mm:a-` (inclusive, 0-based). Listing the same charges twice in one condition is an error. Example: `Cage_Anion: cage,mm:0-275`, when the first 276 MM charges are the counterions.
-- **Masks:**
-  - Off by default. `mask_radius`: e.g. 1.6 Å around the mask atoms (default: the cage, so a guest does not blank the cavity), or `vdw` for Bondi radii × `vdw_scale`, or per group, e.g. `{metals: 2.0, '2-133': 1.6}`.
-  - `mask_atoms`, `hull_atoms`, `mask_frac`: a cell is blanked when it's flagged in at least `mask_frac` of the frames.
-  - Masks are stored next to the map and never applied to the data.
-- **No charges yet:** use `molden: frames/*/*.molden`, `charge_type` and `multiwfn_path` in place of `charges:`. Multiwfn then generates any missing `Charges<type>.txt`.
-
-**Python API (to add to your own script):**
+**Python API:**
 ```python
-from pyef import esp_profile as ep
+from pyef.analysis import Electrostatics
 
-files = ['f1/ChargesCM5.txt', 'f2/ChargesCM5.txt']                 # or one file
-res = ep.compute_esp_profile(files, ptchg_files=['f1/pointcharges.txt', 'f2/pointcharges.txt'],
-                             cut='horizontal')                      # plane, extent, conditions: auto
-ep.save_esp_profile('esp_profile.npz', res, name='mysystem')
-ep.plot_esp_profile(res, out='esp_profile')                         # esp_profile.svg / .png
-cavity = ep.region_mean(res, 'Cage', z_lim=4.0, x_lim=4.0)          # mean over unmasked |z|,|x| <= 4 A
+molden_paths = ['/path/to/structure.molden']
+xyz_paths = ['/path/to/structure.xyz']
 
-# explicit plane through three atoms / centroids, with your own source sets
-res = ep.compute_esp_profile(files, plane_points=(1, 0, '2-34'), origin='midpoint',
-                             conditions={'CageOnly': 'qm:0-133', 'Cage_Solv': 'qm:0-133,mm'})
-```
-From an `Electrostatics` object, the charges are generated if they are missing:
-```python
-es = Electrostatics(molden_paths, xyz_paths)
-es.includePtChgs('pointcharges.txt')                                # optional, QM/MM
+es = Electrostatics(molden_paths, xyz_paths, dielectric=1.0)
+
+# Optional, QM/MM: include the point-charge file in each job's folder
+# es.includePtChgs('pointcharges.txt')
+
+# Plane through atoms 1 and 0 and the centroid of atoms 2-34; writes esp_profile.svg/.png/.npz
 res = es.getESPProfile(charge_types=['Hirshfeld_I'], profile_filename='esp_profile',
-                       multiwfn_path=multiwfn_path, plane_points=(1, 0, '2-41'),
-                       formats=('svg', 'png'))                # esp_profile.svg/.png/.npz
+                       multiwfn_path='/path/to/multiwfn', plane_points=(1, 0, '2-34'))
 ```
-In a `pyef -c config.yaml` jobs file, use `espprofile, job.molden, job.xyz` for
-the automatic plane, or add `(1, 0, 2-34)` to give it yourself. Jobs that share
-a plane are averaged. Set the options with `profile_cut`, `profile_offset`,
-`profile_extent`, `profile_spacing`, `profile_conditions`, `profile_origin`,
-`profile_mask_radius`, `profile_mask_atoms`, `profile_hull_atoms`,
-`profile_r_min` and `profile_esp_range`.
 
-**Output:** `<output>.npz` holds:
-- `<name>_mean_<cond>` and `<name>_std_<cond>`: V, unmasked.
-- `<name>_mask`, `<name>_z_vals` / `_x_vals`.
-- `<name>_cut`, `<name>_plane_spec`.
-- `<name>_cage_atoms` / `_guest_atoms`.
-- `<name>_mean_dist`: \|P2 − P1\|.
-- the frame-averaged in-plane coordinates of the three points and of every QM atom.
+**Defaults:** the ESP of the cage alone (a guest is left out), colour limits taken from the cage cavity so the metals and walls saturate, and the atoms in the plane drawn as white sticks. Common options, as keywords to `getESPProfile` or as `profile_<option>` in `config.yaml`:
 
-Load it with `ep.load_esp_profile`, and blank the masked cells with `ep.masked(res, cond)`.
+| Option | Example | Effect |
+|--------|---------|--------|
+| `esp_range` | `(-10, 10)` | Fixed colour scale in V |
+| `conditions` | `{'Cage': 'cage', 'All': 'all'}` | Which charges to sum; `All` includes the guest |
+| `cut` | `'horizontal'` | Plane perpendicular to P1 → P2 instead of through P3 |
+| `mask_radius` | `1.6` | Blank cells within this distance (Å) of an atom |
 
-`.
+If the `Charges<type>.txt` files already exist, `pyef espprofile --template > esp.yaml` then `pyef espprofile -c esp.yaml` makes the map without Multiwfn.
 
 ---
 
