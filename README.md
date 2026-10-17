@@ -9,7 +9,7 @@ Note: This package is under active development as of 2026, if you encounter any 
 2. **Configuration Options (kwargs)**
 3. **Basic Usage**
 4. **PDB-Only Mode (No Multiwfn Required)**
-5. **ESP Profile on a Three-Atom Plane**
+5. **ESP Profile on a Plane Through a Cage**
 
 ## 1. Installation
 
@@ -282,90 +282,95 @@ df = es.getElectrostatic_stabilization(substrate_idxs=[np.arange(0, 10), np.aran
                                         name_dataStorage='estab_pdb')
 ```
 
-`pdb_charge_paths` can also be passed directly to any of the three calculation functions on a standard (molden/xyz) object to override charges for that call only.
+`pdb_charge_paths` can also be passed directly to any of the three calculation functions on a standard (molden/xyz) object to override charges for that call onl## 5. ESP Profile on a Plane Through a Cage
 
-## 5. ESP Profile on a Three-Atom Plane
-
-Map the electrostatic potential on the plane through three atoms (or the
-centroids of atom groups) and plot it. Give one frame for a single-frame map,
-or many frames (e.g. QM/MM snapshots) to average them. Each frame gets its own
-plane before averaging, so the map follows the molecule.
-
-- **Vertical axis:** P1 → P2.
-- **Horizontal axis:** in the plane, pointing toward P3.
-- **Origin:** the centroid of the three points (default), the P1–P2 midpoint,
-  an atom, or explicit xyz.
-- **ESP:** `ESP (V) = 14.3996 / dielectric * Σ q/r`. Pairs closer than
-  `r_min` (0.5 Å) are skipped.
+Map the electrostatic potential on a plane through a cage (or any molecule)
+and plot it. Give one frame for a single-frame map, or many frames (e.g. QM/MM
+snapshots) to average them. Each frame gets its own plane before averaging, so
+the map follows the molecule.
 
 It reads the files pyEF already makes: `Charges<type>.txt` (`sym x y z q`) and,
 optionally, a QM/MM `pointcharges.txt` (2 header lines, then `q x y z`). If the
 charges already exist, Multiwfn is not needed.
 
-**One input file:**
+**Automatic: one input file, only the frames are required.**
 ```bash
-pyef espprofile --template > esp.yaml       # commented starter file (also demo/esp_profile.yaml)
-# edit esp.yaml: frames, plane, conditions
-pyef espprofile -c esp.yaml                 # or: python -m pyef.esp_profile -c esp.yaml
+pyef espprofile --template > esp.yaml     # commented starter file (also demo/esp_profile.yaml)
+pyef espprofile -c esp.yaml               # or: python -m pyef.esp_profile -c esp.yaml
 ```
 ```yaml
 charges: frames/*/ChargesCM5.txt    # one file, a list, or a glob; 1 file = single frame, >1 = averaged
-pointcharges: pointcharges.txt      # optional; a bare name is looked up next to each charge file
-plane: [1, 0, 2-34]                 # P1, P2, P3 (0-based); a range/group means its centroid
-origin: midpoint
-conditions:                         # optional: named sets of charges to sum
-  CageOnly: qm:0-133
-  Cage_Anion: qm:0-133,mm:0-275
-  Cage_Anion_Solv: qm:0-133,mm
-output: esp_profile                 # -> esp_profile.npz, .svg, .png
+pointcharges: pointcharges.txt      # optional QM/MM charges, looked up next to each charge file
+cut: vertical                       # or horizontal
+hull_atoms: cage                    # optional: map only inside the cage
 ```
-Without charge files, use `molden: frames/*/*.molden`, `charge_type` and
-`multiwfn_path` in place of `charges:`. Multiwfn then generates any missing
-`Charges<type>.txt`.
+The first frame's geometry is used to find:
+- **the metals:** the two d/f-block atoms;
+- **the ligands:** fragments bonded to a metal;
+- **the cage:** the metals plus their ligands;
+- **the guest:** everything else in the QM region.
 
-**Condition tokens:** `qm`, `mm`, `all`, `qm:a-b`, `mm:a-b`, `mm:a-` (inclusive,
-0-based; an open end runs to the last charge). Listing the same charges twice
-in one condition is an error. With no conditions given you get `qm`, plus
-`all` if there are point charges.
+The run prints what it found, so you can check it. From this it sets:
+- **`plane: auto`:** the metal–metal axis plus the first ligand's centroid.
+- **`cut: vertical`:** the plane containing the M–M axis, with the horizontal axis toward ligand 1.
+- **`cut: horizontal`:** the plane perpendicular to the M–M axis through its midpoint, i.e. the equatorial slice. `offset: 2.0` slides either plane 2 Å along its normal.
+- **`extent: auto`:** a grid that holds the whole cage plus 2 Å (`extent_pad`).
+- **Default conditions:** `Cage`, `Cage_Env` (+ all point charges) and `All` (+ guest).
+- **Default mask atoms:** the cage only, so a guest in the cavity does not blank it.
 
-**Masks:** cells within `mask_radius` of the QM atoms (default 1.6 Å, or
-per-group radii such as `{'0-1': 2.0, '2-133': 1.6}`) and, optionally, cells
-outside the convex hull of `hull_atoms` are masked in at least `mask_frac` of
-the frames. Masks are stored next to the map; they are never applied to the
-data.
+**ESP:** `ESP (V) = 14.3996 / dielectric * Σ q/r`. Pairs closer than `r_min`
+(0.5 Å) are skipped.
+
+**Manual control:** set any of these yourself:
+- **`plane: [1, 0, 2-34]`:** P1, P2, P3 as 0-based atom indices, or groups whose centroid is used. The axis runs P1 → P2, and the horizontal axis points toward P3. This works for any molecule, not only cages.
+- **`origin`:** `centroid`, `midpoint`, an atom index or `[x, y, z]`.
+- **`extent`, `spacing`:** a number, or `[z, x]`.
+- **`conditions`**, written as tokens: `cage`, `guest`, `metals`, `qm`, `mm`, `all`, `qm:a-b`, `mm:a-b`, `mm:a-` (inclusive, 0-based). Listing the same charges twice in one condition is an error. Example: `Cage_Anion: cage,mm:0-275`, when the first 276 MM charges are the counterions.
+- **Masks:**
+  - `mask_radius`: 1.6 Å by default, or `vdw` for Bondi radii × `vdw_scale`, or per group, e.g. `{metals: 2.0, '2-133': 1.6}`.
+  - `mask_atoms`, `hull_atoms`, `mask_frac`: a cell is blanked when it's flagged in at least `mask_frac` of the frames.
+  - Masks are stored next to the map and never applied to the data.
+- **No charges yet:** use `molden: frames/*/*.molden`, `charge_type` and `multiwfn_path` in place of `charges:`. Multiwfn then generates any missing `Charges<type>.txt`.
 
 **Python API (to add to your own script):**
 ```python
 from pyef import esp_profile as ep
 
-res = ep.compute_esp_profile(
-    charge_files=['f1/ChargesCM5.txt', 'f2/ChargesCM5.txt'],     # or a single file in a list
-    plane_points=(1, 0, '2-34'),
-    ptchg_files=['f1/pointcharges.txt', 'f2/pointcharges.txt'],  # optional
-    conditions={'CageOnly': 'qm:0-133', 'Cage_Solv': 'qm:0-133,mm'},
-    origin='midpoint', extent=(7.5, 6.0), spacing=0.1)
+files = ['f1/ChargesCM5.txt', 'f2/ChargesCM5.txt']                 # or one file
+res = ep.compute_esp_profile(files, ptchg_files=['f1/pointcharges.txt', 'f2/pointcharges.txt'],
+                             cut='horizontal')                      # plane, extent, conditions: auto
 ep.save_esp_profile('esp_profile.npz', res, name='mysystem')
-ep.plot_esp_profile(res, out='esp_profile')                       # esp_profile.svg / .png
-cavity = ep.region_mean(res, 'CageOnly', z_lim=4.0, x_lim=4.0)   # mean over unmasked |z|,|x| <= 4 A
+ep.plot_esp_profile(res, out='esp_profile')                         # esp_profile.svg / .png
+cavity = ep.region_mean(res, 'Cage', z_lim=4.0, x_lim=4.0)          # mean over unmasked |z|,|x| <= 4 A
+
+# explicit plane through three atoms / centroids, with your own source sets
+res = ep.compute_esp_profile(files, plane_points=(1, 0, '2-34'), origin='midpoint',
+                             conditions={'CageOnly': 'qm:0-133', 'Cage_Solv': 'qm:0-133,mm'})
 ```
 From an `Electrostatics` object, the charges are generated if they are missing:
 ```python
 es = Electrostatics(molden_paths, xyz_paths)
-es.includePtChgs('pointcharges.txt')                  # optional, QM/MM
-res = es.getESPProfile('CM5', (1, 0, '2-34'), multiwfn_path, origin='midpoint',
-                       conditions={'CageOnly': 'qm:0-133', 'All': 'all'})
+es.includePtChgs('pointcharges.txt')                                # optional, QM/MM
+res = es.getESPProfile('CM5', multiwfn_path=multiwfn_path, cut='vertical')
 ```
-In a `pyef -c config.yaml` jobs file, use `espprofile, job.molden, job.xyz, (1, 0, 2-34)`.
-All jobs that share a plane are averaged together. The grid and the conditions
-come from `profile_extent`, `profile_spacing`, `profile_conditions`,
-`profile_origin`, `profile_mask_radius`, `profile_mask_atoms`,
-`profile_hull_atoms` and `profile_r_min` in `config.yaml`.
+In a `pyef -c config.yaml` jobs file, use `espprofile, job.molden, job.xyz` for
+the automatic plane, or add `(1, 0, 2-34)` to give it yourself. Jobs that share
+a plane are averaged. Set the options with `profile_cut`, `profile_offset`,
+`profile_extent`, `profile_spacing`, `profile_conditions`, `profile_origin`,
+`profile_mask_radius`, `profile_mask_atoms`, `profile_hull_atoms` and
+`profile_r_min`.
 
-**Output:** `<output>.npz` holds `<name>_mean_<cond>` and `<name>_std_<cond>`
-(V, unmasked), `<name>_mask`, `<name>_z_vals` / `_x_vals`, `<name>_mean_dist`
-(\|P2 − P1\|), and the frame-averaged in-plane coordinates of the three points
-and of every QM atom. Load it with `ep.load_esp_profile`, and blank the masked
-cells with `ep.masked(res, cond)`.
+**Output:** `<output>.npz` holds:
+- `<name>_mean_<cond>` and `<name>_std_<cond>`: V, unmasked.
+- `<name>_mask`, `<name>_z_vals` / `_x_vals`.
+- `<name>_cut`, `<name>_plane_spec`.
+- `<name>_cage_atoms` / `_guest_atoms`.
+- `<name>_mean_dist`: \|P2 − P1\|.
+- the frame-averaged in-plane coordinates of the three points and of every QM atom.
+
+Load it with `ep.load_esp_profile`, and blank the masked cells with `ep.masked(res, cond)`.
+
+`.
 
 ---
 

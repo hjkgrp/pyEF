@@ -2937,13 +2937,13 @@ Please verify the file exists or set the path to None for jobs without point cha
         print(f"Saved ESP results to: {output_filename}")
         return df
 
-    def getESPProfile(self, charge_type, plane_points, multiwfn_path=None,
-                      profile_filename='esp_profile', conditions=None, origin='centroid',
-                      extent=(7.5, 6.0), spacing=0.1, r_min=0.5, mask_radius=1.6,
+    def getESPProfile(self, charge_type, plane_points='auto', multiwfn_path=None,
+                      profile_filename='esp_profile', conditions=None, origin=None,
+                      extent='auto', spacing=0.1, r_min=0.5, mask_radius=1.6,
                       mask_atoms=None, hull_atoms=None, mask_frac=0.3, dielectric=1,
                       dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
-                      name=None, plot=True):
-        """Frame-averaged ESP map on the plane through three atoms (or centroids).
+                      name=None, plot=True, cut='vertical', offset=0.0, **profile_kw):
+        """Frame-averaged ESP map on a plane through a cage (or any three atoms).
 
         Every job is one frame.  Missing ``Charges<charge_type>.txt`` files are
         generated through Multiwfn; the map itself is computed by
@@ -2953,20 +2953,27 @@ Please verify the file exists or set the path to None for jobs without point cha
         ----------
         charge_type : str
             Monopole charge scheme, e.g. 'CM5' or 'Hirshfeld'. A list uses its first entry.
-        plane_points : sequence of 3 index specs
+        plane_points : sequence of 3 index specs, or 'auto'
             P1, P2, P3 as 0-indexed atom indices or groups (``1``, ``'2-34'``,
-            ``[2, 3, 4]``); a group stands for its centroid. Vertical axis runs
-            P1 -> P2, horizontal points toward P3.
+            ``[2, 3, 4]``); a group stands for its centroid. Axis P1 -> P2,
+            horizontal toward P3. 'auto' (default): the two cage metals and
+            the first ligand, detected from the geometry.
+        cut : 'vertical' or 'horizontal'
+            Plane through P1, P2, P3, or perpendicular to P1 -> P2.
+        offset : float
+            Slide the plane along its normal (Angstrom).
         multiwfn_path : str or None
             Multiwfn executable; only needed if charge files are missing.
         profile_filename : str
             Output stem: writes ``<stem>.npz`` (and ``<stem>.svg/.png`` if ``plot``).
         conditions : dict, list or None
-            Named source sets, e.g. ``{'CageOnly': 'qm:0-133', 'Cage_Solv': 'qm:0-133,mm'}``.
-            Default ``qm`` (and ``all`` when point charges are included).
-        origin : 'centroid', 'midpoint', atom index, or lab xyz
-        extent, spacing : float or pair
-            Half-extent (z_half, x_half) and grid spacing in Angstrom.
+            Named source sets, e.g. ``{'CageOnly': 'cage', 'Cage_Solv': 'cage,mm'}``
+            (tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-). Default:
+            Cage, Cage_Env, All when a cage is detected.
+        origin : 'centroid', 'midpoint', atom index, lab xyz, or None (automatic)
+        extent, spacing : float, pair, or 'auto' (extent)
+            Half-extent (z_half, x_half) and grid spacing in Angstrom; 'auto'
+            fits the whole cage.
         r_min : float
             Source-probe pairs closer than this (Angstrom) are dropped.
         mask_radius, mask_atoms, hull_atoms, mask_frac
@@ -3040,7 +3047,7 @@ Please verify the file exists or set the path to None for jobs without point cha
             origin=origin, extent=extent, spacing=spacing, r_min=r_min,
             dielectric=dielectric, mm_scale=1 / math.sqrt(dielectric_scale),
             mask_radius=mask_radius, mask_atoms=mask_atoms, hull_atoms=hull_atoms,
-            mask_frac=mask_frac)
+            mask_frac=mask_frac, cut=cut, offset=offset, **profile_kw)
 
         name = name or os.path.basename(profile_filename)
         esp_profile.save_esp_profile(f"{profile_filename}.npz", result, name=name)

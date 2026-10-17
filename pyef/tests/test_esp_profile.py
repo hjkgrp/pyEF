@@ -205,8 +205,9 @@ def test_frames_are_averaged_in_their_own_plane(tmp_path, rng):
     one = write_charges(tmp_path / 'one.txt', syms, xyz, q)
     two = write_charges(tmp_path / 'two.txt', syms, xyz @ R.T, 2 * q)
     res = ep.compute_esp_profile([one, two], (1, 0, '2-5'), extent=3, spacing=0.5,
-                                 mask_radius=1.0)
-    single = ep.compute_esp_profile([one], (1, 0, '2-5'), extent=3, spacing=0.5)
+                                 mask_radius=1.0, conditions='qm')
+    single = ep.compute_esp_profile([one], (1, 0, '2-5'), extent=3, spacing=0.5,
+                                    conditions='qm')
     np.testing.assert_allclose(res['mean_qm'], 1.5 * single['mean_qm'], rtol=1e-8)
     np.testing.assert_allclose(res['std_qm'], 0.5 * np.abs(single['mean_qm']),
                                rtol=1e-8, atol=1e-10)
@@ -322,9 +323,6 @@ def test_config_errors(tmp_path, rng):
     bad.write_text('charges: frames/*/ChargesCM5.txt\nplane: [1, 0, 2]\nplnae: 1\n')
     with pytest.raises(ValueError, match='unknown key'):
         ep.run_config(str(bad))
-    bad.write_text('charges: frames/*/ChargesCM5.txt\n')
-    with pytest.raises(ValueError, match='plane'):
-        ep.run_config(str(bad))
     bad.write_text('charges: nothing/*/ChargesCM5.txt\nplane: [1, 0, 2]\n')
     with pytest.raises(FileNotFoundError):
         ep.run_config(str(bad))
@@ -342,7 +340,136 @@ def test_template_is_a_valid_config(tmp_path, rng, capsys):
     # point the template at toy frames; the toy system has 20 QM / 30 MM charges
     _frame_dirs(tmp_path, rng, 2)
     cfg.update(conditions={'CageOnly': 'qm:0-9', 'Cage_Anion': 'qm:0-9,mm:0-4'},
-               extent=3, spacing=0.5, plane=[1, 0, '2-5'], output='tmpl')
+               extent=3, spacing=0.5, plane=[1, 0, '2-5'], output='tmpl',
+               pointcharges='pointcharges.txt', hull_atoms='all')
     (tmp_path / 'esp.yaml').write_text(yaml.safe_dump(cfg))
     res = ep.main(['-c', str(tmp_path / 'esp.yaml')])
     assert res['n_frames'] == 2 and (tmp_path / 'tmpl.npz').exists()
+
+
+# --- new-cage defaults: auto extent, vdW masks, 'all' -----------------------------------
+
+def test_auto_extent_holds_every_atom(tmp_path, rng):
+    _frame_dirs(tmp_path, rng, 3)
+    files = sorted(str(p) for p in tmp_path.glob('frames/*/ChargesCM5.txt'))
+    res = ep.compute_esp_profile(files, (1, 0, '2-5'), extent='auto', extent_pad=1.5,
+                                 extent_atoms='all', spacing=0.25, origin='midpoint',
+                                 mask_radius=None)
+    zh, xh = res['extent']
+    assert zh == res['z_vals'][-1] and xh == res['x_vals'][-1]
+    for f in files:
+        _, xyz, _ = ep.read_charges(f)
+        frame, _ = ep.plane_frame(xyz, (1, 0, '2-5'), 'midpoint')
+        loc = frame.to_local(xyz)
+        assert np.abs(loc[:, 2]).max() + 1.5 <= zh + 1e-9
+        assert np.abs(loc[:, 0]).max() + 1.5 <= xh + 1e-9
+    # tight: shrinking by one grid step would cut an atom's pad
+    assert zh - 0.25 < max(np.abs(ep.plane_frame(ep.read_charges(f)[1], (1, 0, '2-5'),
+                                                  'midpoint')[0].to_local(
+                                                      ep.read_charges(f)[1])[:, 2]).max()
+                           for f in files) + 1.5
+
+
+def test_vdw_mask_uses_element_radii():
+    syms = ['Pd', 'C', 'H', 'N']
+    r = ep.vdw_radii_for(syms, scale=1.2)
+    np.testing.assert_allclose(r, 1.2 * np.array([1.63, 1.70, 1.20, 1.55]))
+    with pytest.warns(UserWarning, match='Fe'):
+        assert ep.vdw_radii_for(['Fe'])[0] == ep.DEFAULT_VDW_RADIUS
+    assert ep.vdw_radii_for(['FE'], overrides={'Fe': 2.3})[0] == 2.3
+    sets = ep._mask_sets('vdw', 'all', syms)
+    assert sorted(((tuple(i), r) for i, r in sets), key=lambda t: t[1]) == [((2,), 1.2), ((3,), 1.55),
+                                                     ((0,), 1.63), ((1,), 1.7)]
+
+
+def test_vdw_mask_on_grid(tmp_path):
+    # one Pd and one H on the plane; masked cells are exactly those inside a vdW sphere
+    syms = ['Pd', 'H', 'C']
+    xyz = np.array([[0, 0, 2.0], [0, 0, -2.0], [3.0, 0, 0]])
+    cf = write_charges(tmp_path / 'c.txt', syms, xyz, [1.0, 0.5, 0.0])
+    res = ep.compute_esp_profile([cf], (1, 0, 2), mask_radius='vdw', mask_atoms='0-1',
+                                 extent=4, spacing=0.1, origin='midpoint')
+    ZZ, XX = np.meshgrid(res['z_vals'], res['x_vals'], indexing='ij')
+    inside = (np.hypot(ZZ - 2, XX) < 1.63) | (np.hypot(ZZ + 2, XX) < 1.20)
+    np.testing.assert_array_equal(res['mask'], inside)
+
+
+def test_hull_all_equals_explicit_range(tmp_path, rng):
+    _frame_dirs(tmp_path, rng, 1)
+    f = [str(next(tmp_path.glob('frames/*/ChargesCM5.txt')))]
+    kw = dict(extent=4, spacing=0.5, mask_radius=None)
+    a = ep.compute_esp_profile(f, (1, 0, 2), hull_atoms='all', **kw)
+    b = ep.compute_esp_profile(f, (1, 0, 2), hull_atoms='0-19', **kw)
+    np.testing.assert_array_equal(a['mask'], b['mask'])
+    assert a['mask'].any()
+
+
+# --- automatic system detection and cuts ---------------------------------------------------
+
+def _mini_cage():
+    """Two Pd on z, two N-C-C-C-N ligands bridging them (at +y and +x), and a
+    two-atom guest at the equator bonded to nothing."""
+    syms, xyz = ['Pd', 'Pd'], [[0, 0, 3.0], [0, 0, -3.0]]
+    for d in ([0, 2.0], [2.0, 0]):
+        for el, z in zip('NCCCN', (3.0, 1.5, 0.0, -1.5, -3.0)):
+            syms.append(el)
+            xyz.append([d[0], d[1], z])
+    syms += ['C', 'C']
+    xyz += [[-1.2, -1.2, 0.0], [-2.2, -1.2, 0.0]]
+    return syms, np.array(xyz)
+
+
+def test_detect_system_finds_cage_and_guest():
+    syms, xyz = _mini_cage()
+    sysd = ep.detect_system(syms, xyz)
+    assert sysd['metals'] == [0, 1]
+    assert sysd['ligands'] == [list(range(2, 7)), list(range(7, 12))]
+    assert sysd['cage'] == list(range(12)) and sysd['guest'] == [12, 13]
+    assert ep.index_spec_str([0, 1, 2, 5, 7, 8]) == '0-2+5+7-8'
+
+
+def test_auto_plane_vertical_and_horizontal(tmp_path):
+    syms, xyz = _mini_cage()
+    cf = write_charges(tmp_path / 'c.txt', syms, xyz, np.linspace(-1, 1, len(syms)))
+    v = ep.compute_esp_profile([cf], spacing=0.5, mask_radius=None)
+    assert list(v['plane_spec']) == ['1', '0', '2-6']          # Pd1 -> Pd0, ligand 1
+    assert v['conditions'] == ['Cage', 'All']                    # guest present, no MM
+    np.testing.assert_allclose(v['plane_points_local'],
+                               [[0, 0, -3], [0, 0, 3], [2, 0, 0]], atol=1e-12)
+    h = ep.compute_esp_profile([cf], cut='horizontal', spacing=0.5, mask_radius=None)
+    # horizontal: Pd-Pd axis is the normal, through the centre; ligand 1 toward +x
+    np.testing.assert_allclose(h['plane_points_local'],
+                               [[0, -3, 0], [0, 3, 0], [2, 0, 0]], atol=1e-12)
+    f, _ = ep.plane_frame(xyz, (1, 0, '2-6'), 'midpoint', cut='horizontal', offset=1.0)
+    R = f.rotation
+    np.testing.assert_allclose(R.T @ R, np.eye(3), atol=1e-12)
+    assert np.linalg.det(R) == pytest.approx(1.0)
+    np.testing.assert_allclose(f.y_hat, [0, 0, 1], atol=1e-12)   # normal = axis P1 -> P2
+    np.testing.assert_allclose(f.x_hat, [0, 1, 0], atol=1e-12)   # toward ligand 1
+    np.testing.assert_allclose(f.origin, [0, 0, 1.0], atol=1e-12)  # offset along normal
+    # horizontal-cut ESP is the plain sum over the in-plane probe points
+    probes = f.to_lab(ep.plane_grid(2, 2, 5, 5)[2])
+    _, _, m = ep.esp_on_grid(f, xyz, np.linspace(-1, 1, len(syms)), extent=2, spacing=1.0)
+    np.testing.assert_allclose(m.ravel(), ep.esp_at(probes, xyz, np.linspace(-1, 1, len(syms))))
+
+
+def test_named_tokens_and_default_masks(tmp_path):
+    syms, xyz = _mini_cage()
+    q = np.linspace(-1, 1, len(syms))
+    cf = write_charges(tmp_path / 'c.txt', syms, xyz, q)
+    r = ep.compute_esp_profile([cf], conditions={'C': 'cage', 'G': 'guest', 'A': 'all',
+                                                 'M': 'metals'},
+                               extent=3, spacing=0.5, mask_radius=0.9)
+    np.testing.assert_allclose(r['mean_C'] + r['mean_G'], r['mean_A'], atol=1e-12)
+    # the default radius mask covers the cage only: in the equatorial cut the
+    # guest atom lies in the plane and does not blank its cell; mask_atoms='all' does
+    kw = dict(cut='horizontal', extent=3, spacing=0.1, mask_radius=0.9)
+    default = ep.compute_esp_profile([cf], **kw)
+    every = ep.compute_esp_profile([cf], mask_atoms='all', **kw)
+    g = ep.plane_frame(xyz, (1, 0, '2-6'), 'midpoint', cut='horizontal')[0].to_local(xyz[12])
+    assert abs(g[1]) < 1e-12
+    cell = (np.argmin(np.abs(default['z_vals'] - g[2])), np.argmin(np.abs(default['x_vals'] - g[0])))
+    assert not default['mask'][cell] and every['mask'][cell]
+    with pytest.raises(ValueError, match='plane auto'):
+        ep.compute_esp_profile([write_charges(tmp_path / 'n.txt', ['C', 'C', 'C'],
+                                              np.eye(3) * 3, [0.1, 0.2, -0.3])])

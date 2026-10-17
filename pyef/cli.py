@@ -424,9 +424,9 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
         elif analysis_type == 'espprofile':
             # Every job is one frame; jobs that share a plane are averaged together
             chg_type = charge_types[0] if isinstance(charge_types, list) else charge_types
-            filtered_planes = [plane_points[i] if plane_points else None for i in job_indices]
-            if any(p is None for p in filtered_planes):
-                raise ValueError("Every espprofile job needs a plane tuple, e.g. (1, 0, 2-34)")
+            # a job without a plane tuple uses the automatic plane (two metals + first ligand)
+            filtered_planes = [(plane_points[i] if plane_points else None) or 'auto'
+                               for i in job_indices]
             planes = list(dict.fromkeys(filtered_planes))
             for n, plane in enumerate(planes):
                 members = [k for k, p in enumerate(filtered_planes) if p == plane]
@@ -503,7 +503,8 @@ def run(config):
     profile_keys = {'profile_extent': 'extent', 'profile_spacing': 'spacing',
                     'profile_conditions': 'conditions', 'profile_origin': 'origin',
                     'profile_mask_radius': 'mask_radius', 'profile_mask_atoms': 'mask_atoms',
-                    'profile_hull_atoms': 'hull_atoms', 'profile_r_min': 'r_min'}
+                    'profile_hull_atoms': 'hull_atoms', 'profile_r_min': 'r_min',
+                    'profile_cut': 'cut', 'profile_offset': 'offset'}
     profile_options = {kw: config_data[key] for key, kw in profile_keys.items()
                        if config_data.get(key) is not None}
 

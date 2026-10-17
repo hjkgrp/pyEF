@@ -171,11 +171,12 @@ def _segment_conditions(conditions):
 
 
 def _closed_stops(conditions):
-    """Largest closed (inclusive) stop per source, to check against each frame."""
+    """Highest index each source must have, to check against each frame.  An
+    open range ``a-`` only needs ``a`` charges (it may be empty)."""
     top = {s: -1 for s in SOURCES}
     for t in conditions.values():
         for s, a, b in parse_condition(t):
-            top[s] = max(top[s], a if b is None else b)
+            top[s] = max(top[s], a - 1 if b is None else b)
     return top
 
 
@@ -283,6 +284,174 @@ def hull_mask(probes, hull_xyz):
         np.asarray(probes, dtype=float).reshape(-1, 3)) < 0
 
 
+# Bondi (1964) van der Waals radii, A; B and Al from Mantina et al. (2009).
+# Elements not listed fall back to DEFAULT_VDW_RADIUS (with a warning); set
+# your own with ``vdw_radii={'Fe': 2.0}``.
+VDW_RADII = {
+    'H': 1.20, 'He': 1.40, 'Li': 1.82, 'B': 1.92, 'C': 1.70, 'N': 1.55,
+    'O': 1.52, 'F': 1.47, 'Ne': 1.54, 'Na': 2.27, 'Mg': 1.73, 'Al': 1.84,
+    'Si': 2.10, 'P': 1.80, 'S': 1.80, 'Cl': 1.75, 'Ar': 1.88, 'K': 2.75,
+    'Ni': 1.63, 'Cu': 1.40, 'Zn': 1.39, 'Ga': 1.87, 'As': 1.85, 'Se': 1.90,
+    'Br': 1.85, 'Kr': 2.02, 'Pd': 1.63, 'Ag': 1.72, 'Cd': 1.58, 'In': 1.93,
+    'Sn': 2.17, 'Te': 2.06, 'I': 1.98, 'Xe': 2.16, 'Pt': 1.75, 'Au': 1.66,
+    'Hg': 1.55, 'Tl': 1.96, 'Pb': 2.02, 'U': 1.86}
+DEFAULT_VDW_RADIUS = 2.0
+
+
+def vdw_radii_for(symbols, scale=1.0, overrides=None):
+    """Per-atom van der Waals radius (A) times ``scale``.
+
+    ``overrides`` (``{'Fe': 2.0}``) takes precedence over :data:`VDW_RADII`;
+    unknown elements get :data:`DEFAULT_VDW_RADIUS` and a warning.
+    """
+    table = dict(VDW_RADII)
+    table.update({str(k).capitalize(): float(v) for k, v in (overrides or {}).items()})
+    out, unknown = [], set()
+    for sym in symbols:
+        el = re.match(r'[A-Za-z]{1,2}', str(sym))
+        el = el.group(0).capitalize() if el else str(sym)
+        if el not in table:
+            unknown.add(el)
+        out.append(table.get(el, DEFAULT_VDW_RADIUS))
+    if unknown:
+        warnings.warn(f'no van der Waals radius for {sorted(unknown)}; using '
+                      f'{DEFAULT_VDW_RADIUS} A (set vdw_radii to override)')
+    return scale * np.array(out)
+
+
+# Cordero et al. (2008) covalent radii, A (low-spin for Mn, Fe, Co), for
+# working out which atoms are bonded.  Unlisted elements use 1.5 A.
+COVALENT_RADII = {
+    'H': 0.31, 'Li': 1.28, 'Be': 0.96, 'B': 0.84, 'C': 0.76, 'N': 0.71,
+    'O': 0.66, 'F': 0.57, 'Na': 1.66, 'Mg': 1.41, 'Al': 1.21, 'Si': 1.11,
+    'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'K': 2.03, 'Ca': 1.76, 'Sc': 1.70,
+    'Ti': 1.60, 'V': 1.53, 'Cr': 1.39, 'Mn': 1.39, 'Fe': 1.32, 'Co': 1.26,
+    'Ni': 1.24, 'Cu': 1.32, 'Zn': 1.22, 'Ga': 1.22, 'Ge': 1.20, 'As': 1.19,
+    'Se': 1.20, 'Br': 1.20, 'Y': 1.90, 'Zr': 1.75, 'Nb': 1.64, 'Mo': 1.54,
+    'Tc': 1.47, 'Ru': 1.46, 'Rh': 1.42, 'Pd': 1.39, 'Ag': 1.45, 'Cd': 1.44,
+    'In': 1.42, 'Sn': 1.39, 'Sb': 1.39, 'Te': 1.38, 'I': 1.39, 'La': 2.07,
+    'Hf': 1.75, 'Ta': 1.70, 'W': 1.62, 'Re': 1.51, 'Os': 1.44, 'Ir': 1.41,
+    'Pt': 1.36, 'Au': 1.36, 'Hg': 1.32, 'Pb': 1.46, 'Bi': 1.48}
+# d- and f-block elements: the nodes of a metal-organic cage
+CAGE_METALS = set(
+    'Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd La Ce Pr Nd '
+    'Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg'.split())
+BOND_TOL = 1.2              # bonded if d < BOND_TOL * (r_cov,i + r_cov,j)
+METAL_BOND_TOL = 1.3        # looser for metal-ligand (coordination) bonds
+
+
+def _element(sym):
+    m = re.match(r'[A-Za-z]{1,2}', str(sym))
+    return m.group(0).capitalize() if m else str(sym)
+
+
+def detect_system(symbols, xyz):
+    """Find the metals, ligands, cage and guest in one QM geometry.
+
+    Atoms are bonded if closer than ``BOND_TOL`` (``METAL_BOND_TOL`` for a
+    metal) times the sum of their covalent radii.  Metals are the d/f-block
+    atoms; a ligand is a metal-free fragment bonded to a metal; the cage is
+    the metals plus their ligands; the guest is every other QM atom.
+
+    Returns a dict with ``metals``, ``ligands`` (lists of indices, ordered by
+    their lowest index), ``cage`` and ``guest`` (sorted index lists).
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    xyz = np.asarray(xyz, dtype=float)
+    els = [_element(s) for s in symbols]
+    n = len(els)
+    rad = np.array([COVALENT_RADII.get(e, 1.5) for e in els])
+    is_metal = np.array([e in CAGE_METALS for e in els])
+    pairs = cKDTree(xyz).query_pairs(METAL_BOND_TOL * 2 * rad.max(), output_type='ndarray')
+    if len(pairs):
+        i, j = pairs[:, 0], pairs[:, 1]
+        d = np.linalg.norm(xyz[i] - xyz[j], axis=1)
+        either = is_metal[i] | is_metal[j]
+        bonded = d < np.where(either, METAL_BOND_TOL, BOND_TOL) * (rad[i] + rad[j])
+        i, j, either = i[bonded], j[bonded], either[bonded]
+    else:
+        i = j = either = np.zeros(0, dtype=int)
+    # fragments of the metal-free bond graph
+    org = ~either
+    g = coo_matrix((np.ones(org.sum()), (i[org], j[org])), shape=(n, n))
+    _, label = connected_components(g, directed=False)
+    metals = [int(k) for k in np.flatnonzero(is_metal)]
+    touching = set()
+    for a, b in zip(i[either], j[either]):
+        for m, x in ((a, b), (b, a)):
+            if is_metal[m] and not is_metal[x]:
+                touching.add(label[x])
+    ligands = sorted(([int(k) for k in np.flatnonzero(label == L)] for L in touching),
+                     key=min)
+    cage = sorted(set(metals).union(*ligands)) if ligands or metals else []
+    guest = sorted(set(range(n)) - set(cage))
+    return {'metals': metals, 'ligands': ligands, 'cage': cage, 'guest': guest}
+
+
+def index_spec_str(idx):
+    """Compact spec for an index list: [0, 1, 2, 5] -> '0-2+5'."""
+    idx = sorted(int(i) for i in idx)
+    runs, start = [], None
+    for a, b in zip(idx, idx[1:] + [None]):
+        start = a if start is None else start
+        if b != a + 1:
+            runs.append(f'{start}-{a}' if a > start else f'{start}')
+            start = None
+    return '+'.join(runs)
+
+
+def describe_system(system, symbols):
+    lines = []
+    m = system['metals']
+    lines.append(f'  metals: {len(m)}  ' + ', '.join(f'{_element(symbols[k])}{k}' for k in m))
+    sizes = sorted({len(L) for L in system['ligands']})
+    lines.append(f'  ligands: {len(system["ligands"])} (atoms each: '
+                 f'{", ".join(map(str, sizes)) or "-"})  '
+                 + '  '.join(index_spec_str(L) for L in system['ligands']))
+    lines.append(f'  cage: {len(system["cage"])} atoms  {index_spec_str(system["cage"]) or "-"}')
+    lines.append(f'  guest / rest of QM: {len(system["guest"])} atoms  '
+                 f'{index_spec_str(system["guest"]) or "-"}')
+    return '\n'.join(lines)
+
+
+def _named_sets(system):
+    return {'cage': system['cage'], 'guest': system['guest'], 'metals': system['metals']}
+
+
+def _atom_indices(spec, n, named=None):
+    """Index spec -> list.  'all' / 'qm' / None mean every QM atom; 'cage',
+    'guest' and 'metals' come from :func:`detect_system`."""
+    if spec is None or (isinstance(spec, str) and spec.strip().lower() in ('all', 'qm')):
+        return list(range(n))
+    if isinstance(spec, str) and spec.strip().lower() in ('cage', 'guest', 'metals'):
+        idx = (named or {}).get(spec.strip().lower(), [])
+        if not idx:
+            raise ValueError(f'no {spec.strip().lower()} atoms were detected; give indices instead')
+        return list(idx)
+    idx = parse_index_spec(spec)
+    if max(idx) >= n:
+        raise IndexError(f'atom index {max(idx)} out of range for {n} QM atoms')
+    return idx
+
+
+def auto_extent(charge_files, make_frame, atoms, pad=2.0, spacing=0.1):
+    """Half-extent ``(z_half, x_half)`` that holds every ``atoms`` atom (index
+    list) of every frame, projected into that frame's plane (built by
+    ``make_frame(xyz)``), plus ``pad`` A, rounded up to whole grid steps."""
+    dz, dx = np.broadcast_to(np.asarray(spacing, dtype=float), (2,))
+    zmax = xmax = 0.0
+    for cf in charge_files:
+        _, xyz, _ = read_charges(cf)
+        frame, _ = make_frame(xyz)
+        loc = frame.to_local(xyz[atoms])
+        zmax = max(zmax, np.abs(loc[:, 2]).max())
+        xmax = max(xmax, np.abs(loc[:, 0]).max())
+    return (float(np.ceil((zmax + pad) / dz) * dz),
+            float(np.ceil((xmax + pad) / dx) * dx))
+
+
 # --- plane ----------------------------------------------------------------------
 
 @dataclass
@@ -340,13 +509,23 @@ def plane_basis(p1, p2, p3, origin=None, min_perp=1e-3):
     return PlaneFrame(o, np.column_stack([x_hat, y_hat, z_hat]), length)
 
 
-def plane_frame(xyz, plane_points, origin='centroid'):
-    """:func:`plane_basis` from QM coordinates and index specs.
+def plane_frame(xyz, plane_points, origin=None, cut='vertical', offset=0.0):
+    """Plane frame from QM coordinates and index specs.
 
     ``plane_points`` is three index specs (int, ``'2-34'``, or a list) into
-    ``xyz``.  ``origin`` is ``'centroid'``, ``'midpoint'``, an atom index, or a
-    length-3 lab xyz.  Returns ``(frame, points (3, 3))``.
+    ``xyz``.  ``cut='vertical'`` (default): the plane through P1, P2, P3
+    (:func:`plane_basis`).  ``cut='horizontal'``: the plane perpendicular to
+    the P1 -> P2 axis, with the axis at the map centre and the horizontal
+    axis toward P3.  ``origin`` is ``'centroid'``, ``'midpoint'``, an atom
+    index, or a length-3 lab xyz (default: midpoint for a horizontal cut,
+    centroid otherwise); ``offset`` (A) slides the plane along its normal.
+    Returns ``(frame, points (3, 3))``.
     """
+    if cut not in ('vertical', 'horizontal'):
+        raise ValueError(f"cut must be 'vertical' or 'horizontal', got {cut!r}")
+    if origin is None:
+        origin = 'midpoint' if cut == 'horizontal' else 'centroid'
+
     if len(plane_points) != 3:
         raise ValueError(f'need exactly three plane points, got {len(plane_points)}')
     xyz = np.asarray(xyz, dtype=float)
@@ -370,7 +549,25 @@ def plane_frame(xyz, plane_points, origin='centroid'):
         o = xyz[int(origin)]
     else:
         o = np.asarray(origin, dtype=float).reshape(3)
-    return plane_basis(p1, p2, p3, origin=o), np.array(pts)
+    if cut == 'vertical':
+        frame = plane_basis(p1, p2, p3, origin=o)
+    else:
+        v = p2 - p1
+        length = float(np.linalg.norm(v))
+        if length == 0.0:
+            raise ValueError('P1 and P2 coincide')
+        a = v / length
+        if o is None:
+            o = (p1 + p2 + p3) / 3.0
+        c = p1 + np.dot(o - p1, a) * a          # the axis point at the origin's height
+        w = (p3 - c) - np.dot(p3 - c, a) * a
+        if np.linalg.norm(w) < 1e-3 * max(np.linalg.norm(p3 - c), 1e-12):
+            raise ValueError('P3 lies on the P1-P2 axis; the horizontal direction is undefined')
+        x_hat = w / np.linalg.norm(w)
+        frame = PlaneFrame(c, np.column_stack([x_hat, a, np.cross(x_hat, a)]), length)
+    if offset:
+        frame.origin = frame.origin + float(offset) * frame.y_hat
+    return frame, np.array(pts)
 
 
 def grid_shape(extent, spacing):
@@ -435,28 +632,45 @@ def _normalize_conditions(conditions, have_mm):
     return out
 
 
-def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
-                        conditions=None, origin='centroid', extent=(7.5, 6.0),
+def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
+                        conditions=None, origin=None, extent='auto',
                         spacing=0.1, r_min=0.5, dielectric=1.0, mm_scale=1.0,
                         mask_radius=1.6, mask_atoms=None, hull_atoms=None,
-                        mask_frac=0.3):
+                        mask_frac=0.3, vdw_scale=1.0, vdw_radii=None,
+                        extent_pad=2.0, extent_atoms=None, cut='vertical',
+                        offset=0.0, verbose=True):
     """Frame-averaged ESP maps on the plane through three atoms/centroids.
 
     Parameters
     ----------
     charge_files : list of str
         One ``Charges<type>.txt`` per frame.
-    plane_points : sequence of 3 index specs
+    plane_points : sequence of 3 index specs, or 'auto'
         P1, P2, P3 as QM atom indices or groups (``1``, ``'2-34'``, ``[2, 3]``).
+        ``'auto'`` (default): the two cage metals and the first ligand's
+        centroid, from :func:`detect_system` (needs exactly two d/f-block
+        metals).
     ptchg_files : list of str or None
         One point-charge file per frame (``None`` entries allowed), aligned
         with ``charge_files``.
     conditions : dict, list or None
         ``{name: tokens}``, or a list of ``'name=tokens'`` / bare token
-        strings.  Default ``qm`` (and ``all`` if point charges are given).
-    origin : 'centroid', 'midpoint', atom index, or lab xyz.
-    extent : float or (z_half, x_half)
-        Half-extent of the map in A.
+        strings.  Tokens: ``qm``, ``mm``, ``all``, ``qm:a-b``, ``mm:a-``, and
+        the detected sets ``cage``, ``guest``, ``metals``.  Default: ``Cage``,
+        ``Cage_Env`` (with point charges) and ``All`` when a cage is
+        detected, else ``qm`` (and ``all``).
+    origin : 'centroid', 'midpoint', atom index, lab xyz, or None
+        None: midpoint for an auto plane or a horizontal cut, else centroid.
+    cut : 'vertical' or 'horizontal'
+        Vertical: the plane through P1, P2, P3.  Horizontal: perpendicular to
+        P1 -> P2 through the origin (e.g. a cage's equatorial plane).
+    offset : float
+        Slide the plane this far (A) along its normal.
+    extent : float, (z_half, x_half) or 'auto'
+        Half-extent of the map in A.  ``'auto'`` fits every ``extent_atoms``
+        atom (default: ``hull_atoms`` if given, else all QM atoms) of every
+        frame, projected into its plane, plus ``extent_pad`` A -- the whole
+        cage for any cage size.
     spacing : float or (dz, dx), A.
     r_min : float
         Pairs closer than this (A) are dropped.
@@ -465,16 +679,24 @@ def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
     mm_scale : float
         Factor applied to every MM charge (pyEF uses
         ``1/sqrt(dielectric_scale)``).
-    mask_radius : float, dict or None
+    mask_radius : float, dict, 'vdw' or None
         Cells within this distance (A) of a ``mask_atoms`` atom are flagged.
         A dict ``{atom_spec: radius}`` gives each atom group its own radius,
         e.g. ``{'0-1': 2.0, '2-133': 1.6}`` (``mask_atoms`` is then ignored).
-    mask_atoms : index spec or None
-        QM atoms for a float ``mask_radius``; default all QM atoms.
-    hull_atoms : index spec or None
-        Cells outside the convex hull of these QM atoms are flagged.
+        ``'vdw'`` uses each atom's van der Waals radius times ``vdw_scale``
+        (:data:`VDW_RADII`, overridable per element with ``vdw_radii``).
+    mask_atoms : index spec, 'all', 'cage' or None
+        QM atoms for a float or 'vdw' ``mask_radius``; default the detected
+        cage (so a guest does not blank the cavity), else all QM atoms.
+    hull_atoms : index spec, 'all' or None
+        Cells outside the convex hull of these QM atoms are flagged
+        (``'all'``: every QM atom, e.g. a cage with nothing else in the QM region).
     mask_frac : float
         A cell is masked if flagged in at least this fraction of frames.
+    vdw_scale, vdw_radii
+        See ``mask_radius='vdw'``.
+    extent_pad, extent_atoms
+        See ``extent='auto'``.
 
     Returns
     -------
@@ -495,21 +717,65 @@ def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
         raise ValueError(f'{len(charge_files)} charge files but '
                          f'{len(ptchg_files)} point-charge files')
     have_mm = any(p is not None for p in ptchg_files)
+    say = print if verbose else (lambda *a, **k: None)
+
+    # work out the system from the first frame
+    syms0, xyz0, _ = read_charges(charge_files[0])
+    n0 = len(syms0)
+    try:
+        system = detect_system(syms0, xyz0)
+    except Exception as e:                        # odd input: named sets unavailable
+        warnings.warn(f'could not detect the cage ({e}); use explicit indices')
+        system = {'metals': [], 'ligands': [], 'cage': [], 'guest': list(range(n0))}
+    named = _named_sets(system)
+    say('detected (frame 1):\n' + describe_system(system, syms0))
+    auto_plane = plane_points is None or (isinstance(plane_points, str)
+                                          and plane_points.strip().lower() == 'auto')
+    if auto_plane:
+        if len(system['metals']) != 2 or not system['ligands']:
+            raise ValueError(
+                f'plane auto needs exactly two cage metals with ligands; found '
+                f'{len(system["metals"])} metal(s), {len(system["ligands"])} ligand(s). '
+                'Give plane_points=(P1, P2, P3) instead.')
+        m1, m2 = system['metals']
+        plane_points = (m2, m1, system['ligands'][0])
+        say(f'plane auto: P1 = {_element(syms0[m2])}{m2}, P2 = {_element(syms0[m1])}{m1}, '
+            f'P3 = centroid of ligand {index_spec_str(system["ligands"][0])}')
+    if origin is None:
+        origin = 'midpoint' if (auto_plane or cut == 'horizontal') else 'centroid'
+    plane_points = [_atom_indices(pp, n0, named) if isinstance(pp, str) else pp
+                    for pp in plane_points]
+
+    if conditions is None and system['cage']:
+        conditions = {'Cage': 'cage'}
+        if have_mm:
+            conditions['Cage_Env'] = 'cage,mm'
+        if have_mm or system['guest']:
+            conditions['All'] = 'all'
     conditions = _normalize_conditions(conditions, have_mm)
+    condition_tokens = {c: t for c, t in conditions.items()}
+    conditions = {c: _expand_named(t, named) for c, t in conditions.items()}
     segments, seg_conditions = _segment_conditions(conditions)
     top = _closed_stops(conditions)
 
+    def make_frame(xyz):
+        return plane_frame(xyz, plane_points, origin, cut, offset)
+
+    if mask_atoms is None and not isinstance(mask_radius, dict) and system['cage']:
+        mask_atoms = 'cage'
+    hull_idx = None if hull_atoms is None else _atom_indices(hull_atoms, n0, named)
+    if isinstance(extent, str):
+        if extent.strip().lower() != 'auto':
+            raise ValueError(f"extent must be a number, a pair or 'auto', got {extent!r}")
+        ext_atoms = (_atom_indices(extent_atoms, n0, named) if extent_atoms is not None
+                     else hull_idx if hull_idx is not None
+                     else system['cage'] or list(range(n0)))
+        extent = auto_extent(charge_files, make_frame, ext_atoms, extent_pad, spacing)
+        say(f'extent auto: z +/-{extent[0]:g} A, x +/-{extent[1]:g} A')
     zh, xh, nz, nx = grid_shape(extent, spacing)
     z_vals, x_vals, local = plane_grid(zh, xh, nz, nx)
     k = COULOMB_EV_ANGSTROM / dielectric
-    if isinstance(mask_radius, dict):
-        mask_sets = [(parse_index_spec(a), float(r)) for a, r in mask_radius.items()]
-    elif mask_radius:
-        mask_sets = [(None if mask_atoms is None else parse_index_spec(mask_atoms),
-                      float(mask_radius))]
-    else:
-        mask_sets = []
-    hull_idx = None if hull_atoms is None else parse_index_spec(hull_atoms)
+    mask_sets = None                          # built from the first frame
 
     maps = {c: [] for c in conditions}
     excluded = np.zeros(len(local))
@@ -519,6 +785,7 @@ def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
         syms, qm_xyz, qm_q = read_charges(cf)
         if n_qm is None:
             symbols, n_qm = syms, len(syms)
+            mask_sets = _mask_sets(mask_radius, mask_atoms, syms, vdw_scale, vdw_radii, named)
         elif len(syms) != n_qm:
             raise ValueError(f'{cf}: {len(syms)} QM atoms, expected {n_qm} '
                              '(all frames must be the same system)')
@@ -534,12 +801,12 @@ def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
                                  f'this frame has {n[s]} {s.upper()} charges')
         src = {'qm': (qm_xyz, qm_q), 'mm': (mm_xyz, mm_q)}
 
-        frame, pts = plane_frame(qm_xyz, plane_points, origin)
+        frame, pts = make_frame(qm_xyz)
         probes = frame.to_lab(local)
 
         excl = np.zeros(len(local), dtype=bool)
         for idx, r in mask_sets:
-            excl |= min_dist(probes, qm_xyz if idx is None else qm_xyz[idx]) < r
+            excl |= min_dist(probes, qm_xyz[idx]) < r
         if hull_idx is not None:
             excl |= hull_mask(local, frame.to_local(qm_xyz[hull_idx]))
         excluded += excl
@@ -562,14 +829,56 @@ def compute_esp_profile(charge_files, plane_points, ptchg_files=None,
            'frames': np.array([os.path.abspath(f) for f in charge_files]),
            'condition_tokens': np.array(
                [f'{c}={t if isinstance(t, str) else ",".join(t)}'
-                for c, t in conditions.items()]),
+                for c, t in condition_tokens.items()]),
+           'cut': cut, 'offset': float(offset),
+           'plane_spec': np.array([index_spec_str(parse_index_spec(pp)) for pp in plane_points]),
+           'cage_atoms': np.array(system['cage'], dtype=int),
+           'guest_atoms': np.array(system['guest'], dtype=int),
+           'metal_atoms': np.array(system['metals'], dtype=int),
            'conditions': list(conditions),
-           'dielectric': float(dielectric), 'r_min': float(r_min)}
+           'dielectric': float(dielectric), 'r_min': float(r_min),
+           'extent': np.array([zh, xh])}
     for c in conditions:
         arr = np.stack(maps[c])
         res[f'mean_{c}'] = arr.mean(axis=0)
         res[f'std_{c}'] = arr.std(axis=0)
     return res
+
+
+def _mask_sets(mask_radius, mask_atoms, symbols, vdw_scale=1.0, vdw_radii=None,
+               named=None):
+    """``[(atom indices, radius), ...]`` for the radius mask; atoms sharing
+    a radius are grouped so each group costs one distance pass."""
+    n = len(symbols)
+    if isinstance(mask_radius, dict):
+        return [(_atom_indices(a, n, named), float(r)) for a, r in mask_radius.items()]
+    if isinstance(mask_radius, str):
+        if mask_radius.strip().lower() != 'vdw':
+            raise ValueError(f"mask_radius must be a number, a dict or 'vdw', got {mask_radius!r}")
+        idx = _atom_indices(mask_atoms, n, named)
+        radii = vdw_radii_for([symbols[i] for i in idx], vdw_scale, vdw_radii)
+        return [([i for i, r in zip(idx, radii) if r == u], float(u))
+                for u in np.unique(radii)]
+    if mask_radius:
+        return [(_atom_indices(mask_atoms, n, named), float(mask_radius))]
+    return []
+
+
+def _expand_named(tokens, named):
+    """Replace 'cage' / 'guest' / 'metals' tokens by their qm index runs."""
+    if not isinstance(tokens, str):
+        tokens = ','.join(tokens)
+    out = []
+    for tok in (t for t in re.split(r'[,\s]+', tokens.strip()) if t):
+        key = tok.lower()
+        if key in ('cage', 'guest', 'metals'):
+            idx = named.get(key, [])
+            if not idx:
+                raise ValueError(f'condition token {tok!r}: no {key} atoms were detected')
+            out += [f'qm:{r}' for r in index_spec_str(idx).split('+')]
+        else:
+            out.append(tok)
+    return ','.join(out)
 
 
 def masked(result, cond):
@@ -680,15 +989,15 @@ def _contour_levels(vmin, vmax, step):
 
 def plot_esp_profile(result, conditions=None, out=None, fixed=None,
                      point_labels=('P1', 'P2', 'P3'), atom_slab=None,
-                     ylabel='distance along P1→P2 axis (Å)',
-                     xlabel='distance in plane (Å)', level_step=1.0,
+                     ylabel=None, xlabel=None, level_step=1.0,
                      panel_size=3.5, exts=('svg', 'png'), dpi=300):
     """One row of panels, one per condition, on a shared colour scale.
 
     Masked cells are blank.  Gray contours every ``level_step`` V, a white
     ESP = 0 line where a panel crosses zero, and each panel's mean over
     unmasked cells in the corner.  P1 and P2 are gold circles, P3 a green
-    triangle (if inside the map); ``atom_slab`` (A) also draws the QM atoms
+    triangle, each only if it lies within 0.5 A of the plane (in a horizontal
+    cut the P1-P2 axis is the map centre); ``atom_slab`` (A) also draws the QM atoms
     within that distance of the plane.  ``fixed=(vmin, vmax, cmap)`` pins the
     colour scale.  With ``out`` set, saves ``out.<ext>`` and closes the
     figure.  Returns ``(fig, axes, (vmin, vmax, cmap))``.
@@ -700,6 +1009,12 @@ def plot_esp_profile(result, conditions=None, out=None, fixed=None,
     z_vals, x_vals = np.asarray(result['z_vals']), np.asarray(result['x_vals'])
     vmin, vmax, cmap = tuple(fixed) if fixed is not None else _scale_for(maps)
     pts = np.asarray(result['plane_points_local'])
+    horizontal = str(result.get('cut', 'vertical')) == 'horizontal'
+    if ylabel is None:
+        ylabel = ('in plane, ⊥ to P1→P2 axis (Å)' if horizontal
+                  else 'distance along P1→P2 axis (Å)')
+    if xlabel is None:
+        xlabel = 'in plane, toward P3 (Å)'
     near = None
     if atom_slab:
         a = np.asarray(result['atoms_local'])
@@ -732,6 +1047,8 @@ def plot_esp_profile(result, conditions=None, out=None, fixed=None,
                 ax.plot(near[:, 0], near[:, 2], '.', color='0.2', ms=4, alpha=0.6,
                         zorder=5)
             for i, p in enumerate(pts):
+                if abs(p[1]) > 0.5:
+                    continue
                 ax.plot(p[0], p[2], 'o' if i < 2 else '^', ms=9, zorder=6,
                         color='gold' if i < 2 else 'limegreen',
                         markeredgecolor='black', markeredgewidth=1.5,
@@ -771,6 +1088,8 @@ def _pair_ptchg(charges, ptchg):
 
 
 def _mask_radius_arg(v):
+    if v.strip().lower() == 'vdw':
+        return 'vdw'
     if ':' not in v:
         return float(v)
     try:
@@ -789,10 +1108,13 @@ def _origin_arg(vals):
 
 
 TEMPLATE = """\
-# ESP profile on the plane through three atoms -- pyEF input file.
-# Run:  python -m pyef.esp_profile -c this_file.yaml     (or: pyef espprofile -c this_file.yaml)
+# ESP profile on a plane through a cage -- pyEF input file.
+# Run:  pyef espprofile -c this_file.yaml     (or: python -m pyef.esp_profile -c this_file.yaml)
 # Paths are relative to this file.  One frame -> that frame's map;
-# several frames -> the average, each frame in its own three-atom plane.
+# several frames -> the average, each frame in its own plane.
+# Only `charges` (or `molden`) is required: everything else below is the default
+# or a common choice.  The run prints the metals, ligands, cage and guest it
+# detected -- check them.
 
 # --- frames: give EITHER charges OR molden -------------------------------------
 charges: frames/*/ChargesCM5.txt        # one file, a list, or a glob (sorted f2 < f10)
@@ -800,41 +1122,54 @@ charges: frames/*/ChargesCM5.txt        # one file, a list, or a glob (sorted f2
 # xyz: frames/*/*.xyz                   #   Charges<charge_type>.txt (xyz default: molden stem + .xyz)
 # charge_type: CM5
 # multiwfn_path: /path/to/Multiwfn
-
-pointcharges: pointcharges.txt          # optional MM charges (QM/MM): a bare file name is looked
-                                        #   up next to each frame's charges; or a list / glob
+# pointcharges: pointcharges.txt        # QM/MM charges: a bare file name is looked up next to
+                                        #   each frame's charges; or a list / glob
 
 # --- the plane --------------------------------------------------------------------
-plane: [1, 0, 2-34]                     # P1, P2, P3: atom index (0-based) or group (2-34, 2-10+12)
-                                        #   vertical axis P1 -> P2, horizontal toward P3
-origin: midpoint                        # centroid (default) | midpoint (of P1, P2) | atom index | [x, y, z]
+plane: auto                             # auto: P1, P2 = the two cage metals, P3 = first ligand's
+                                        #   centroid.  Or [P1, P2, P3]: atom index (0-based) or
+                                        #   group (2-34, 2-10+12); axis P1 -> P2, toward P3
+cut: vertical                           # vertical: plane through P1, P2, P3 (contains the M-M axis)
+                                        # horizontal: perpendicular to P1 -> P2 (equatorial slice)
+# offset: 0.0                           # slide the plane along its normal (A), e.g. a horizontal
+                                        #   cut 2 A above the midpoint
+# origin: midpoint                      # default: midpoint for auto/horizontal, else centroid;
+                                        #   or an atom index, or [x, y, z]
 
-# --- what to sum (optional; default qm, plus all if pointcharges are given) ---------
-conditions:
-  CageOnly: qm:0-133                    # tokens: qm, mm, all, qm:a-b, mm:a-b, mm:a-  (inclusive)
-  Cage_Anion: qm:0-133,mm:0-275
-  Cage_Anion_Solv: qm:0-133,mm
+# --- what to sum (optional) ---------------------------------------------------------
+# Default with a detected cage: Cage = cage, Cage_Env = cage + mm, All = everything.
+# Tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-b, mm:a-  (ranges inclusive, 0-based)
+# conditions:
+#   Cage: cage
+#   Cage_Anion: cage,mm:0-275           # e.g. if the first 276 MM charges are the counterions
+#   Cage_Anion_Solv: cage,mm
 
 # --- grid and physics (optional) ----------------------------------------------------
-extent: [7.5, 6.0]                      # half-extent (A): one value or [z_half, x_half]
+extent: auto                            # fits the whole cage (+ extent_pad); or a half-extent (A):
+                                        #   one value or [z_half, x_half]
+extent_pad: 2.0
 spacing: 0.1                            # A: one value or [dz, dx]
 dielectric: 1
 dielectric_scale: 1                     # MM charges scaled by 1/sqrt(dielectric_scale), as in pyEF
 r_min: 0.5                              # drop source-probe pairs closer than this (A)
 
 # --- masks (stored next to the map, blank in the plot) ---------------------------------
-mask_radius: 1.6                        # A around mask_atoms, or per group: {'0-1': 2.0, '2-133': 1.6}
-# mask_atoms: 0-133                     # default: all QM atoms
-# hull_atoms: 0-133                     # also blank cells outside the convex hull of these atoms
+mask_radius: 1.6                        # A around the cage atoms; or vdw (each atom's van der Waals
+                                        #   radius x vdw_scale); or per group {'metals': 2.0, '2-133': 1.6}
+# vdw_scale: 1.0
+# vdw_radii: {Fe: 2.0}                  # add/override radii for elements not in the table
+# mask_atoms: cage                      # default: the detected cage (a guest does not blank the cavity)
+hull_atoms: cage                        # blank cells outside the cage's convex hull; remove to map
+                                        #   outside the cage too
 mask_frac: 0.3                          # blank a cell flagged in >= this fraction of frames
 
 # --- output -----------------------------------------------------------------------------
 output: esp_profile                     # writes esp_profile.npz (+ .svg/.png)
 # name: mysystem                        # system name inside the npz (default: output stem)
 plot: true
-# point_labels: [Pd2, Pd1, LA1]
-# ylabel: distance along Pd-Pd axis (Å)
-# xlabel: distance in plane (Å)
+# point_labels: [M2, M1, L1]
+# ylabel: distance along M-M axis (Å)
+# xlabel: x⊥ (Å)
 # fixed_scale: [-2, 9, viridis]         # pin the colour scale: vmin, vmax, colormap
 # atom_slab: 1.0                        # also draw atoms within this distance (A) of the plane
 """
@@ -844,7 +1179,8 @@ CONFIG_KEYS = {
     'plane', 'origin', 'conditions', 'extent', 'spacing', 'dielectric',
     'dielectric_scale', 'r_min', 'mask_radius', 'mask_atoms', 'hull_atoms',
     'mask_frac', 'output', 'name', 'plot', 'point_labels', 'ylabel', 'xlabel',
-    'fixed_scale', 'atom_slab'}
+    'fixed_scale', 'atom_slab', 'vdw_scale', 'vdw_radii', 'extent_pad',
+    'extent_atoms', 'cut', 'offset'}
 
 
 def _natural_key(path):
@@ -930,8 +1266,6 @@ def run_config(path):
                          f'{sorted(CONFIG_KEYS)}')
     if ('charges' in cfg) == ('molden' in cfg):
         raise ValueError(f'{path}: give exactly one of "charges" or "molden"')
-    if 'plane' not in cfg:
-        raise ValueError(f'{path}: "plane: [P1, P2, P3]" is required')
     base = os.path.dirname(os.path.abspath(path))
 
     charges = (_resolve_files(cfg['charges'], base, 'charges') if 'charges' in cfg
@@ -941,18 +1275,22 @@ def run_config(path):
     print(f'{n} frame{"s" if n > 1 else ""}: '
           + ('averaging, each frame in its own plane' if n > 1 else 'single-frame map'))
 
-    origin = cfg.get('origin', 'centroid')
+    origin = cfg.get('origin')
     if isinstance(origin, str) and origin.isdigit():
         origin = int(origin)
     res = compute_esp_profile(
-        charges, cfg['plane'], ptchg_files=ptchg, conditions=cfg.get('conditions'),
-        origin=origin, extent=cfg.get('extent', (7.5, 6.0)),
+        charges, cfg.get('plane', 'auto'), ptchg_files=ptchg,
+        conditions=cfg.get('conditions'), origin=origin,
+        cut=str(cfg.get('cut', 'vertical')).lower(), offset=cfg.get('offset', 0.0),
+        extent=cfg.get('extent', 'auto'),
         spacing=cfg.get('spacing', 0.1), r_min=cfg.get('r_min', 0.5),
         dielectric=cfg.get('dielectric', 1.0),
         mm_scale=1.0 / np.sqrt(cfg.get('dielectric_scale', 1.0)),
         mask_radius=cfg.get('mask_radius', 1.6) or None,
         mask_atoms=cfg.get('mask_atoms'), hull_atoms=cfg.get('hull_atoms'),
-        mask_frac=cfg.get('mask_frac', 0.3))
+        mask_frac=cfg.get('mask_frac', 0.3), vdw_scale=cfg.get('vdw_scale', 1.0),
+        vdw_radii=cfg.get('vdw_radii'), extent_pad=cfg.get('extent_pad', 2.0),
+        extent_atoms=cfg.get('extent_atoms'))
 
     out = os.path.join(base, cfg.get('output', os.path.splitext(os.path.basename(path))[0]))
     name = str(cfg.get('name', os.path.basename(out)))
@@ -987,16 +1325,25 @@ def build_parser():
                    help='Charges<type>.txt, one per frame')
     p.add_argument('--ptchg', nargs='+', default=None,
                    help='point-charge files, one per frame, same order as --charges')
-    p.add_argument('--plane', nargs=3, metavar=('P1', 'P2', 'P3'),
-                   help='QM atom index or group (2-34, 2-10+12) for each point; '
-                        'vertical axis P1->P2, horizontal toward P3')
-    p.add_argument('--origin', nargs='+', default=['centroid'],
-                   help='centroid (default), midpoint, an atom index, or x y z')
+    p.add_argument('--plane', nargs='+', default=['auto'], metavar='P',
+                   help='auto (default: the two cage metals + first ligand), or P1 P2 P3 as '
+                        'QM atom index or group (2-34, 2-10+12, cage); axis P1->P2, toward P3')
+    p.add_argument('--cut', choices=['vertical', 'horizontal'], default='vertical',
+                   help='vertical: plane through P1, P2, P3; horizontal: perpendicular to '
+                        'P1->P2 (default vertical)')
+    p.add_argument('--offset', type=float, default=0.0,
+                   help='slide the plane along its normal, A (default 0)')
+    p.add_argument('--origin', nargs='+', default=None,
+                   help='centroid, midpoint, an atom index, or x y z (default: midpoint for '
+                        'auto/horizontal, else centroid)')
     p.add_argument('--condition', action='append', default=None,
                    help="NAME=TOKENS, e.g. CageOnly=qm:0-133 or 'Cage_Anion=qm:0-133,mm:0-275'; "
                         'repeatable. Default: qm (and all with --ptchg)')
-    p.add_argument('--extent', nargs='+', type=float, default=[7.5, 6.0],
-                   help='half-extent in A: one value or Z_HALF X_HALF (default 7.5 6.0)')
+    p.add_argument('--extent', nargs='+', default=['auto'],
+                   help="half-extent in A: one value, Z_HALF X_HALF, or 'auto' to fit the "
+                        'whole cage (default auto)')
+    p.add_argument('--extent-pad', type=float, default=2.0,
+                   help='A beyond the outermost atom for --extent auto (default 2)')
     p.add_argument('--spacing', nargs='+', type=float, default=[0.1],
                    help='grid spacing in A: one value or DZ DX (default 0.1)')
     p.add_argument('--dielectric', type=float, default=1.0)
@@ -1005,10 +1352,13 @@ def build_parser():
     p.add_argument('--r-min', type=float, default=0.5,
                    help='drop source-probe pairs closer than this, A (default 0.5)')
     p.add_argument('--mask-radius', type=_mask_radius_arg, default=1.6,
-                   help='mask cells within this distance of mask atoms, A (0 disables), '
-                        'or per-group radii ATOMS:R,..., e.g. 0-1:2.0,2-133:1.6')
+                   help="mask cells within this distance of mask atoms, A (0 disables), "
+                        "'vdw' for each atom's van der Waals radius, or per-group radii "
+                        'ATOMS:R,..., e.g. 0-1:2.0,2-133:1.6')
+    p.add_argument('--vdw-scale', type=float, default=1.0,
+                   help='factor on the van der Waals radii for --mask-radius vdw')
     p.add_argument('--mask-atoms', default=None,
-                   help='QM atoms for the radius mask (default: all QM atoms)')
+                   help='QM atoms for the radius mask (default: the detected cage, else all)')
     p.add_argument('--hull', default=None,
                    help='mask cells outside the convex hull of these QM atoms')
     p.add_argument('--mask-frac', type=float, default=0.3)
@@ -1027,18 +1377,27 @@ def main(argv=None):
         return None
     if a.config:
         return run_config(a.config)
-    if not a.charges or not a.plane:
-        parser.error('give -c CONFIG.yaml, or --charges and --plane')
+    if not a.charges:
+        parser.error('give -c CONFIG.yaml, or --charges')
+    if a.plane == ['auto']:
+        plane = 'auto'
+    elif len(a.plane) == 3:
+        plane = a.plane
+    else:
+        parser.error('--plane takes auto or three points P1 P2 P3')
     for opt, v in (('--extent', a.extent), ('--spacing', a.spacing)):
         if len(v) not in (1, 2):
             raise SystemExit(f'error: {opt} takes one or two values')
+    extent = 'auto' if a.extent == ['auto'] else [float(v) for v in a.extent]
     res = compute_esp_profile(
-        a.charges, a.plane, ptchg_files=_pair_ptchg(a.charges, a.ptchg),
-        conditions=a.condition, origin=_origin_arg(a.origin),
-        extent=a.extent, spacing=a.spacing, r_min=a.r_min,
+        a.charges, plane, ptchg_files=_pair_ptchg(a.charges, a.ptchg),
+        conditions=a.condition, cut=a.cut, offset=a.offset,
+        origin=None if a.origin is None else _origin_arg(a.origin),
+        extent=extent, spacing=a.spacing, r_min=a.r_min,
         dielectric=a.dielectric, mm_scale=a.mm_scale,
         mask_radius=a.mask_radius or None, mask_atoms=a.mask_atoms,
-        hull_atoms=a.hull, mask_frac=a.mask_frac)
+        hull_atoms=a.hull, mask_frac=a.mask_frac, vdw_scale=a.vdw_scale,
+        extent_pad=a.extent_pad)
     save_esp_profile(f'{a.out}.npz', res, name=a.name)
     print(f'{res["n_frames"]} frames -> {a.out}.npz ({a.name})')
     for c in res['conditions']:
