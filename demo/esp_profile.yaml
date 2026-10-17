@@ -1,0 +1,48 @@
+# ESP profile on the plane through three atoms -- pyEF input file.
+# Run:  python -m pyef.esp_profile -c this_file.yaml     (or: pyef espprofile -c this_file.yaml)
+# Paths are relative to this file.  One frame -> that frame's map;
+# several frames -> the average, each frame in its own three-atom plane.
+
+# --- frames: give EITHER charges OR molden -------------------------------------
+charges: frames/*/ChargesCM5.txt        # one file, a list, or a glob (sorted f2 < f10)
+# molden: frames/*/*.molden             # instead of charges: Multiwfn makes any missing
+# xyz: frames/*/*.xyz                   #   Charges<charge_type>.txt (xyz default: molden stem + .xyz)
+# charge_type: CM5
+# multiwfn_path: /path/to/Multiwfn
+
+pointcharges: pointcharges.txt          # optional MM charges (QM/MM): a bare file name is looked
+                                        #   up next to each frame's charges; or a list / glob
+
+# --- the plane --------------------------------------------------------------------
+plane: [1, 0, 2-34]                     # P1, P2, P3: atom index (0-based) or group (2-34, 2-10+12)
+                                        #   vertical axis P1 -> P2, horizontal toward P3
+origin: midpoint                        # centroid (default) | midpoint (of P1, P2) | atom index | [x, y, z]
+
+# --- what to sum (optional; default qm, plus all if pointcharges are given) ---------
+conditions:
+  CageOnly: qm:0-133                    # tokens: qm, mm, all, qm:a-b, mm:a-b, mm:a-  (inclusive)
+  Cage_Anion: qm:0-133,mm:0-275
+  Cage_Anion_Solv: qm:0-133,mm
+
+# --- grid and physics (optional) ----------------------------------------------------
+extent: [7.5, 6.0]                      # half-extent (A): one value or [z_half, x_half]
+spacing: 0.1                            # A: one value or [dz, dx]
+dielectric: 1
+dielectric_scale: 1                     # MM charges scaled by 1/sqrt(dielectric_scale), as in pyEF
+r_min: 0.5                              # drop source-probe pairs closer than this (A)
+
+# --- masks (stored next to the map, blank in the plot) ---------------------------------
+mask_radius: 1.6                        # A around mask_atoms, or per group: {'0-1': 2.0, '2-133': 1.6}
+# mask_atoms: 0-133                     # default: all QM atoms
+# hull_atoms: 0-133                     # also blank cells outside the convex hull of these atoms
+mask_frac: 0.3                          # blank a cell flagged in >= this fraction of frames
+
+# --- output -----------------------------------------------------------------------------
+output: esp_profile                     # writes esp_profile.npz (+ .svg/.png)
+# name: mysystem                        # system name inside the npz (default: output stem)
+plot: true
+# point_labels: [Pd2, Pd1, LA1]
+# ylabel: distance along Pd-Pd axis (Å)
+# xlabel: distance in plane (Å)
+# fixed_scale: [-2, 9, viridis]         # pin the colour scale: vmin, vmax, colormap
+# atom_slab: 1.0                        # also draw atoms within this distance (A) of the plane

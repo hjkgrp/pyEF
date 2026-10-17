@@ -1,6 +1,6 @@
 """Functions for managing files needed for pyEF"""
 
-def parse_job_batch_file(file_path):
+def parse_job_batch_file(file_path, return_plane_points=False):
     """
     Parse a CSV file and extract specific columns as lists and tuples.
     The input file allows Python style comments on any line.
@@ -24,6 +24,9 @@ def parse_job_batch_file(file_path):
     bond_indices : list of tuples or None
         List of bond tuples for each job.
         None if bond indices are not provided.
+    plane_points : list of tuple or None
+        Only returned with ``return_plane_points=True``: the ``(P1, P2, P3)``
+        plane of each job (None where absent), for ``espprofile``.
 
     Notes
     -----
@@ -34,6 +37,7 @@ def parse_job_batch_file(file_path):
       - esp, /path/to/optim.molden, /path/to/optim.xyz, 30
       - estab, /path/to/optim.molden, /path/to/optim.xyz
       - ef+esp, /path/to/optim.molden, /path/to/optim.xyz, 35
+      - espprofile, /path/to/optim.molden, /path/to/optim.xyz, (1, 0, 2-34)
     """
     import re
 
@@ -42,9 +46,10 @@ def parse_job_batch_file(file_path):
     xyz_paths = []
     metal_indices = []
     bond_indices = []
+    plane_points = []
 
     # Valid analysis type keywords
-    valid_analysis = {'ef', 'esp', 'estab'}
+    valid_analysis = {'ef', 'esp', 'estab', 'espprofile'}
 
     with open(file_path, 'r') as file:
         for line_num, line in enumerate(file, 1):
@@ -101,18 +106,16 @@ def parse_job_batch_file(file_path):
                 job_bonds = []
                 metal_idx = None
 
-                tuple_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
-                matches = re.findall(tuple_pattern, remainder)
-
-                for match in matches:
-                    atom1, atom2 = int(match[0]), int(match[1])
-                    job_bonds.append((atom1, atom2))
+                job_bonds, job_planes = parse_index_tuples(remainder, line_num)
+                if len(job_planes) > 1:
+                    raise ValueError(f"Line {line_num}: only one (a, b, c) plane per job is supported.")
+                if job_bonds:
                     # Set metal_idx to first atom of first bond (for compatibility)
-                    if metal_idx is None:
-                        metal_idx = atom1
+                    metal_idx = job_bonds[0][0]
 
                 metal_indices.append(metal_idx)
                 bond_indices.append(job_bonds)
+                plane_points.append(job_planes[0] if job_planes else None)
 
             elif len(columns) > 3 and columns[3]:
                 # Single metal index
@@ -126,6 +129,7 @@ def parse_job_batch_file(file_path):
                         bond_indices.append([(metal_index, bonded_atom_index)])
                     else:
                         bond_indices.append([])
+                    plane_points.append(None)
                 except ValueError:
                     raise ValueError(
                         f"Line {line_num}: Invalid atom index '{columns[3]}'. "
@@ -135,6 +139,7 @@ def parse_job_batch_file(file_path):
                 # No additional data
                 metal_indices.append(None)
                 bond_indices.append([])
+                plane_points.append(None)
 
     # Return None for metal/bond indices if all are empty/None
     if metal_indices and all(m is None for m in metal_indices):
@@ -142,4 +147,42 @@ def parse_job_batch_file(file_path):
     if bond_indices and all(not b for b in bond_indices):
         bond_indices = None
 
+    if return_plane_points:
+        return analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices, plane_points
     return analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices
+
+
+def parse_index_tuples(remainder, line_num=None):
+    """Split the parenthesized groups of a job line into bonds and planes.
+
+    ``(a, b)`` is a bond (two integer indices).  ``(a, b, c)`` is a plane for
+    ``espprofile``: each entry is an index, an inclusive range ``2-34``, or
+    ``2-10+12`` (a group, whose centroid is used).  Entries that are plain
+    integers are returned as ints, the rest as strings.
+
+    Returns ``(bonds, planes)``, lists of tuples.
+    """
+    import re
+
+    where = f"Line {line_num}: " if line_num is not None else ""
+    bonds, planes = [], []
+    for group in re.findall(r'\(([^()]*)\)', remainder):
+        entries = [e.strip() for e in group.split(',')]
+        for e in entries:
+            if not re.fullmatch(r'\d+(-\d+)?(\+\d+(-\d+)?)*', e):
+                raise ValueError(
+                    f"{where}Invalid atom index '{e}' in '({group})'. "
+                    f"Use integers, ranges like 2-34, or groups like 2-10+12."
+                )
+        if len(entries) == 2:
+            if not all(e.isdigit() for e in entries):
+                raise ValueError(f"{where}Bond '({group})' must be two integer atom indices.")
+            bonds.append((int(entries[0]), int(entries[1])))
+        elif len(entries) == 3:
+            planes.append(tuple(int(e) if e.isdigit() else e for e in entries))
+        else:
+            raise ValueError(
+                f"{where}'({group})' has {len(entries)} entries; use (a, b) for a "
+                f"bond or (a, b, c) for an espprofile plane."
+            )
+    return bonds, planes

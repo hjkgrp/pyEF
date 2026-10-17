@@ -10,6 +10,7 @@ from .validation import (
     check_index_overlap,
     VALID_CHARGE_TYPES
 )
+from .manage import parse_index_tuples
 
 def welcome():
     """Print first to welcome the user while it waits to load the modules"""
@@ -42,7 +43,7 @@ def read_config(config_file):
     with open(config_file, 'r') as file:
         return yaml.safe_load(file)
 
-def parse_job_batch_file(file_path):
+def parse_job_batch_file(file_path, return_plane_points=False):
     """
     Parse a CSV file and extract specific columns as lists and tuples.
     The input file allows Python style comments on any line.
@@ -66,6 +67,9 @@ def parse_job_batch_file(file_path):
     bond_indices : list of tuples or None
         List of bond tuples for each job.
         None if bond indices are not provided.
+    plane_points : list of tuple or None
+        Only returned with ``return_plane_points=True``: the ``(P1, P2, P3)``
+        plane of each job (None where absent), for ``espprofile``.
 
     Notes
     -----
@@ -76,6 +80,7 @@ def parse_job_batch_file(file_path):
       - esp, /path/to/optim.molden, /path/to/optim.xyz, 30
       - estab, /path/to/optim.molden, /path/to/optim.xyz
       - ef+esp, /path/to/optim.molden, /path/to/optim.xyz, 35
+      - espprofile, /path/to/optim.molden, /path/to/optim.xyz, (1, 0, 2-34)
     """
     import re
 
@@ -84,9 +89,10 @@ def parse_job_batch_file(file_path):
     xyz_paths = []
     metal_indices = []
     bond_indices = []
+    plane_points = []
 
     # Valid analysis type keywords
-    valid_analysis = {'ef', 'esp', 'estab'}
+    valid_analysis = {'ef', 'esp', 'estab', 'espprofile'}
 
     with open(file_path, 'r') as file:
         for line_num, line in enumerate(file, 1):
@@ -205,18 +211,16 @@ For more information, see:
                 job_bonds = []
                 metal_idx = None
 
-                tuple_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
-                matches = re.findall(tuple_pattern, remainder)
-
-                for match in matches:
-                    atom1, atom2 = int(match[0]), int(match[1])
-                    job_bonds.append((atom1, atom2))
+                job_bonds, job_planes = parse_index_tuples(remainder, line_num)
+                if len(job_planes) > 1:
+                    raise ValueError(f"Line {line_num}: only one (a, b, c) plane per job is supported.")
+                if job_bonds:
                     # Set metal_idx to first atom of first bond (for compatibility)
-                    if metal_idx is None:
-                        metal_idx = atom1
+                    metal_idx = job_bonds[0][0]
 
                 metal_indices.append(metal_idx)
                 bond_indices.append(job_bonds)
+                plane_points.append(job_planes[0] if job_planes else None)
 
             elif len(columns) > 3 and columns[3]:
                 # Single metal index
@@ -230,6 +234,7 @@ For more information, see:
                         bond_indices.append([(metal_index, bonded_atom_index)])
                     else:
                         bond_indices.append([])
+                    plane_points.append(None)
                 except ValueError:
                     raise ValueError(f"""
 {'='*60}
@@ -258,6 +263,7 @@ For more information, see:
                 # No additional data
                 metal_indices.append(None)
                 bond_indices.append([])
+                plane_points.append(None)
 
     # Return None for metal/bond indices if all are empty/None
     if metal_indices and all(m is None for m in metal_indices):
@@ -265,6 +271,8 @@ For more information, see:
     if bond_indices and all(not b for b in bond_indices):
         bond_indices = None
 
+    if return_plane_points:
+        return analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices, plane_points
     return analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices
 
 def read_file_lines(file_path):
@@ -277,7 +285,8 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
          multiwfn_path,
          charge_types=['Hirshfeld_I'], multipole_bool=True, use_multipole=False,
          save_atomwise_decomposition=False, substrate_idxs=None, env_idxs=None, multipole_order=2,
-         include_ptchgs=False, ptchg_file='', dielectric_scale=1.0, use_ecp=False, exclude_atoms=[]):
+         include_ptchgs=False, ptchg_file='', dielectric_scale=1.0, use_ecp=False, exclude_atoms=[],
+         plane_points=None, profile_options=None):
     """
     Main function for running the pyEF workflow.
 
@@ -330,6 +339,11 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
         Can be either:
         - Flat list [0, 1, 2] for same exclusions across all jobs
         - Nested list [[0, 1], [2, 3], []] for different exclusions per job
+    plane_points : list of tuple or None, optional
+        Per-job (P1, P2, P3) plane for 'espprofile' jobs (default: None)
+    profile_options : dict or None, optional
+        Keyword arguments for Electrostatics.getESPProfile (extent, spacing,
+        conditions, origin, mask_radius, ...) (default: None)
     """
     from pyef.analysis import Electrostatics
     from collections import defaultdict
@@ -375,7 +389,7 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
         # Configure QM/MM if requested
         if include_ptchgs and ptchg_file:
             dataObject.includePtChgs(ptchg_file)
-            dataObject.set_dielectric_scale(dielectric_scale)
+            dataObject.set_dielec_scale(dielectric_scale)
 
         # Set excluded atoms if specified
         if exclude_atoms:
@@ -406,6 +420,27 @@ def run_analysis(job_name, molden_paths, xyz_paths, analysis_types, metal_indice
                                Efielddata_filename, multiwfn_path,
                                multipole_bool=multipole_bool, input_bond_indices=filtered_bonds,
                                save_atomwise_decomposition=save_atomwise_decomposition, dielectric=dielectric)
+
+        elif analysis_type == 'espprofile':
+            # Every job is one frame; jobs that share a plane are averaged together
+            chg_type = charge_types[0] if isinstance(charge_types, list) else charge_types
+            filtered_planes = [plane_points[i] if plane_points else None for i in job_indices]
+            if any(p is None for p in filtered_planes):
+                raise ValueError("Every espprofile job needs a plane tuple, e.g. (1, 0, 2-34)")
+            planes = list(dict.fromkeys(filtered_planes))
+            for n, plane in enumerate(planes):
+                members = [k for k, p in enumerate(filtered_planes) if p == plane]
+                suffix = f'_plane{n}' if len(planes) > 1 else ''
+                profile_filename = f'{analysis_type}_{job_name}_{chg_type}{suffix}'
+                group = dataObject if len(planes) == 1 else Electrostatics(
+                    [filtered_molden[k] for k in members], [filtered_xyz[k] for k in members],
+                    dielectric=dielectric)
+                if len(planes) > 1 and include_ptchgs and ptchg_file:
+                    group.includePtChgs(ptchg_file)
+                group.getESPProfile(chg_type, plane, multiwfn_path,
+                                    profile_filename=profile_filename, dielectric=dielectric,
+                                    dielectric_scale=dielectric_scale,
+                                    **(profile_options or {}))
 
         elif analysis_type == 'estab':
             if substrate_idxs is None:
@@ -463,6 +498,14 @@ def run(config):
 
     # Exclude atoms from E-field calculation
     exclude_atoms = config_data.get('exclude_atoms', [])
+
+    # ESP profile (espprofile jobs) options; None leaves getESPProfile's default
+    profile_keys = {'profile_extent': 'extent', 'profile_spacing': 'spacing',
+                    'profile_conditions': 'conditions', 'profile_origin': 'origin',
+                    'profile_mask_radius': 'mask_radius', 'profile_mask_atoms': 'mask_atoms',
+                    'profile_hull_atoms': 'hull_atoms', 'profile_r_min': 'r_min'}
+    profile_options = {kw: config_data[key] for key, kw in profile_keys.items()
+                       if config_data.get(key) is not None}
 
     # ===== VALIDATE CONFIG PARAMETERS =====
 
@@ -595,7 +638,8 @@ For more information, see:
     # ===== END VALIDATION =====
 
     # Parse job batch file
-    analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices = parse_job_batch_file(input)
+    analysis_types, molden_paths, xyz_paths, metal_indices, bond_indices, plane_points = \
+        parse_job_batch_file(input, return_plane_points=True)
     job_name = os.path.splitext(input)[0]
 
     # New format always has analysis types specified per-job
@@ -615,10 +659,26 @@ For more information, see:
         multiwfn_path,
         charge_types, multipole_bool, use_multipole,
         save_atomwise_decomposition, substrate_idxs, env_idxs, multipole_order,
-        include_ptchgs, ptchg_file, dielectric_scale, use_ecp, exclude_atoms
+        include_ptchgs, ptchg_file, dielectric_scale, use_ecp, exclude_atoms,
+        plane_points, profile_options
     )
 
 cli.add_command(run)
+
+@click.command(name='espprofile')
+@click.option("--config", "-c", type=click.Path(exists=True), help="ESP-profile YAML input file")
+@click.option("--template", is_flag=True, help="Print a commented ESP-profile input file and exit")
+def espprofile(config, template):
+    """ESP map on the plane through three atoms: one frame, or the average of many."""
+    from pyef import esp_profile
+    if template:
+        click.echo(esp_profile.TEMPLATE, nl=False)
+    elif config:
+        esp_profile.run_config(config)
+    else:
+        raise click.UsageError("give -c CONFIG.yaml (start from: pyef espprofile --template > esp.yaml)")
+
+cli.add_command(espprofile)
 
 if __name__ == '__main__':
     cli()
