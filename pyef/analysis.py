@@ -2937,6 +2937,162 @@ Please verify the file exists or set the path to None for jobs without point cha
         print(f"Saved ESP results to: {output_filename}")
         return df
 
+    def getESPProfile(self, charge_types='Hirshfeld_I', plane_points='auto', multiwfn_path=None,
+                      profile_filename='esp_profile', conditions=None, origin=None,
+                      extent='auto', spacing=0.1, r_min=0.5, mask_radius=None,
+                      mask_atoms=None, hull_atoms=None, mask_frac=0.3, dielectric=1,
+                      dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
+                      name=None, plot=True, formats=('svg', 'png'), esp_range='cavity',
+                      plot_kw=None, cut='vertical', offset=0.0, **profile_kw):
+        """Frame-averaged ESP map on a plane through a cage (or any three atoms).
+
+        Every job is one frame.  Missing ``Charges<charge_type>.txt`` files are
+        generated through Multiwfn; the map itself is computed by
+        :func:`pyef.esp_profile.compute_esp_profile`.
+
+        Parameters
+        ----------
+        charge_types : str or list of str
+            Monopole charge scheme(s), e.g. 'Hirshfeld_I' or ['CM5', 'Hirshfeld'].
+            One map per scheme; with more than one, each output stem gets a
+            ``_<scheme>`` suffix.
+        plane_points : sequence of 3 index specs, or 'auto'
+            P1, P2, P3 as 0-indexed atom indices or groups (``1``, ``'2-34'``,
+            ``[2, 3, 4]``); a group stands for its centroid. Axis P1 -> P2,
+            horizontal toward P3. 'auto' (default): the two cage metals and
+            the first ligand, detected from the geometry.
+        cut : 'vertical' or 'horizontal'
+            Plane through P1, P2, P3, or perpendicular to P1 -> P2.
+        offset : float
+            Slide the plane along its normal (Angstrom).
+        multiwfn_path : str or None
+            Multiwfn executable; only needed if charge files are missing.
+        profile_filename : str
+            Output stem: writes ``<stem>.npz`` (and ``<stem>.svg/.png`` if ``plot``).
+        conditions : dict, list or None
+            Named source sets, e.g. ``{'CageOnly': 'cage', 'Cage_Solv': 'cage,mm'}``
+            (tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-). Default:
+            Cage (and Cage_Env with point charges) when a cage is detected;
+            the guest is left out -- add e.g. ``'All': 'all'`` to include it.
+        origin : 'centroid', 'midpoint', atom index, lab xyz, or None (automatic)
+        extent, spacing : float, pair, or 'auto' (extent)
+            Half-extent (z_half, x_half) and grid spacing in Angstrom; 'auto'
+            fits the whole cage.
+        r_min : float
+            Source-probe pairs closer than this (Angstrom) are dropped.
+        mask_radius, mask_atoms, hull_atoms, mask_frac
+            Blank cells near atoms / outside a hull; all off by default. See
+            :func:`pyef.esp_profile.compute_esp_profile`.
+        dielectric : float
+            Uniform dielectric; the ESP is divided by it.
+        dielectric_scale : float
+            Point charges are scaled by 1/sqrt(dielectric_scale), as in getESP.
+        includePtChgs, ptchg_paths
+            Per-call point-charge overrides, as in getESP.
+        name : str or None
+            System name inside the npz (default: basename of ``profile_filename``).
+        plot : bool
+            Also draw the map.
+        formats : str or sequence of str
+            Image format(s) for the plot, e.g. 'png' or ('svg', 'png') (default).
+        esp_range : (vmin, vmax), 'cavity' or None
+            Colour scale. 'cavity' (default): limits from the cage cavity
+            alone, so the metals and walls saturate instead of washing it out.
+            (vmin, vmax): fixed limits in V; values outside saturate.
+            None: automatic (percentile-clipped over the whole map).
+        plot_kw : dict or None
+            Other options for :func:`pyef.esp_profile.plot_esp_profile`, e.g.
+            ``{'conditions': ['All'], 'level_step': 0.5}``.
+
+        Returns
+        -------
+        dict
+            The profile result (see :func:`pyef.esp_profile.compute_esp_profile`);
+            with several charge schemes, a dict of results keyed by scheme.
+
+        Examples
+        --------
+        >>> es = Electrostatics(molden_paths, xyz_paths)
+        >>> res = es.getESPProfile(charge_types=['Hirshfeld_I'], profile_filename='esp_profile',
+        ...                        multiwfn_path=multiwfn_path, plane_points=(1, 0, '2-41'))
+        """
+        from . import esp_profile
+
+        if self.pdb_only:
+            raise ValueError("getESPProfile reads Charges<type>.txt files and does not support pdb_only mode")
+        if 'charge_type' in profile_kw:      # old keyword
+            charge_types = profile_kw.pop('charge_type')
+        if isinstance(charge_types, str):
+            charge_types = [charge_types]
+        if isinstance(formats, str):
+            formats = (formats,)
+        if multiwfn_path is None or multiwfn_path == 'None':
+            multiwfn_path = None
+        if len(charge_types) > 1:
+            return {ct: self.getESPProfile(
+                        ct, plane_points, multiwfn_path, f"{profile_filename}_{ct}",
+                        conditions, origin, extent, spacing, r_min, mask_radius,
+                        mask_atoms, hull_atoms, mask_frac, dielectric, dielectric_scale,
+                        includePtChgs, ptchg_paths, name and f"{name}_{ct}", plot,
+                        formats, esp_range, plot_kw, cut, offset, **profile_kw)
+                    for ct in charge_types}
+        charge_type = charge_types[0]
+
+        self.config['dielectric'] = dielectric
+        self.config['dielectric_scale'] = dielectric_scale
+        should_include_ptchg = includePtChgs if includePtChgs is not None else self.config.get('includePtChgs', False)
+
+        owd = os.getcwd()
+        charge_files, ptchg_files = [], []
+        for job_idx, f in enumerate(self.lst_of_folders):
+            f = str(f)
+            charge_file = f"{f}/Charges{charge_type}.txt"
+            if not os.path.exists(charge_file) or self.config.get('rerun', False):
+                if multiwfn_path is None:
+                    raise FileNotFoundError(f"{charge_file} not found and multiwfn_path is not set")
+                comp_cost = self.multiwfn.partitionCharge(
+                    multipole_bool=False, f=f, multiwfn_path=multiwfn_path,
+                    charge_type=charge_type, owd=owd,
+                    molden_filename=os.path.basename(self.molden_paths[job_idx]),
+                    xyz_filename=os.path.basename(self.xyz_paths[job_idx]))
+                if comp_cost == -1 or not os.path.exists(charge_file):
+                    if self.config.get('skip_missing_files', False):
+                        print(f"WARNING: no {charge_type} charges for {f}; skipping this frame")
+                        continue
+                    raise RuntimeError(f"Charge calculation failed for {charge_type} in {f}")
+
+            ptchg_path = None
+            if should_include_ptchg:
+                if ptchg_paths is not None:
+                    ptchg_path = ptchg_paths[job_idx]
+                    if ptchg_path is not None:
+                        ptchg_path = os.path.abspath(ptchg_path)
+                else:
+                    ptchg_path = self._get_ptchg_path_for_job(job_idx, f)
+                if ptchg_path is not None and not os.path.exists(ptchg_path):
+                    if self.config.get('skip_missing_files', False):
+                        print(f"WARNING: point charge file not found: {ptchg_path}; skipping this frame")
+                        continue
+                    raise FileNotFoundError(f"Point charge file not found: {ptchg_path}")
+            charge_files.append(charge_file)
+            ptchg_files.append(ptchg_path)
+
+        result = esp_profile.compute_esp_profile(
+            charge_files, plane_points, ptchg_files=ptchg_files, conditions=conditions,
+            origin=origin, extent=extent, spacing=spacing, r_min=r_min,
+            dielectric=dielectric, mm_scale=1 / math.sqrt(dielectric_scale),
+            mask_radius=mask_radius, mask_atoms=mask_atoms, hull_atoms=hull_atoms,
+            mask_frac=mask_frac, cut=cut, offset=offset, **profile_kw)
+
+        name = name or os.path.basename(profile_filename)
+        esp_profile.save_esp_profile(f"{profile_filename}.npz", result, name=name)
+        print(f"Saved ESP profile ({result['n_frames']} frames) to: {profile_filename}.npz")
+        if plot:
+            esp_profile.plot_esp_profile(result, out=profile_filename, exts=formats,
+                                         esp_range=esp_range, **(plot_kw or {}))
+            print(f"Saved ESP profile plot to: {profile_filename}.{'/.'.join(formats)}")
+        return result
+
     def getEfield(self, charge_types='Hirshfeld_I', Efielddata_filename='ef', multiwfn_path=None,
                   multipole_bool=False, input_bond_indices=[], auto_find_bonds=False,
                   save_atomwise_decomposition=False, visualize=None, dielectric=1,

@@ -1,0 +1,67 @@
+# ESP profile on a plane through a cage -- pyEF input file.
+# Run:  pyef espprofile -c this_file.yaml     (or: python -m pyef.esp_profile -c this_file.yaml)
+# Paths are relative to this file.  One frame -> that frame's map;
+# several frames -> the average, each frame in its own plane.
+# Only `charges` (or `molden`) is required: everything else below is the default
+# or a common choice.  The run prints the metals, ligands, cage and guest it
+# detected -- check them.
+
+# --- frames: give EITHER charges OR molden -------------------------------------
+charges: frames/*/ChargesCM5.txt        # one file, a list, or a glob (sorted f2 < f10)
+# molden: frames/*/*.molden             # instead of charges: Multiwfn makes any missing
+# xyz: frames/*/*.xyz                   #   Charges<charge_type>.txt (xyz default: molden stem + .xyz)
+# charge_type: CM5
+# multiwfn_path: /path/to/Multiwfn
+# pointcharges: pointcharges.txt        # QM/MM charges: a bare file name is looked up next to
+                                        #   each frame's charges; or a list / glob
+
+# --- the plane --------------------------------------------------------------------
+plane: auto                             # auto: P1, P2 = the two cage metals, P3 = first ligand's
+                                        #   centroid.  Or [P1, P2, P3]: atom index (0-based) or
+                                        #   group (2-34, 2-10+12); axis P1 -> P2, toward P3
+cut: vertical                           # vertical: plane through P1, P2, P3 (contains the M-M axis)
+                                        # horizontal: perpendicular to P1 -> P2 (equatorial slice)
+# offset: 0.0                           # slide the plane along its normal (A), e.g. a horizontal
+                                        #   cut 2 A above the midpoint
+# origin: midpoint                      # default: midpoint for auto/horizontal, else centroid;
+                                        #   or an atom index, or [x, y, z]
+
+# --- what to sum (optional) ---------------------------------------------------------
+# Default with a detected cage: Cage = cage, Cage_Env = cage + mm.  The guest is left
+# out of the sources (and the drawn structure); add e.g. All: all to include it.
+# Tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-b, mm:a-  (ranges inclusive, 0-based)
+# conditions:
+#   Cage: cage
+#   Cage_Anion: cage,mm:0-275           # e.g. if the first 276 MM charges are the counterions
+#   Cage_Anion_Solv: cage,mm
+
+# --- grid and physics (optional) ----------------------------------------------------
+extent: auto                            # fits the whole cage (+ extent_pad); or a half-extent (A):
+                                        #   one value or [z_half, x_half]
+extent_pad: 2.0
+spacing: 0.1                            # A: one value or [dz, dx]
+dielectric: 1
+dielectric_scale: 1                     # MM charges scaled by 1/sqrt(dielectric_scale), as in pyEF
+r_min: 0.5                              # drop source-probe pairs closer than this (A)
+
+# --- masks (optional; off by default -- esp_range clips the spikes at the nuclei instead) ---
+# mask_radius: 1.6                      # blank cells within this distance (A) of the cage atoms; or vdw
+                                        #   (each atom's van der Waals radius x vdw_scale); or per group
+                                        #   {'metals': 2.0, '2-133': 1.6}
+# vdw_scale: 1.0
+# vdw_radii: {Fe: 2.0}                  # add/override radii for elements not in the table
+# mask_atoms: cage                      # default: the detected cage (a guest does not blank the cavity)
+# hull_atoms: cage                      # blank cells outside the cage's convex hull
+mask_frac: 0.3                          # blank a cell flagged in >= this fraction of frames
+
+# --- output -----------------------------------------------------------------------------
+output: esp_profile                     # writes esp_profile.npz (+ .svg/.png)
+# name: mysystem                        # system name inside the npz (default: output stem)
+plot: true
+# point_labels: [M2, M1, L1]
+# ylabel: distance along M-M axis (Å)
+# xlabel: x⊥ (Å)
+esp_range: cavity                       # colour limits from the cage cavity only, so the metals and
+                                        #   walls saturate; or [vmin, vmax] in V; null: whole-map automatic
+# fixed_scale: [-2, 9, viridis]         # or pin vmin, vmax and the colormap yourself
+# atom_slab: 1.0                        # also draw atoms within this distance (A) of the plane
