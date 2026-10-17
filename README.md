@@ -2,6 +2,12 @@
 
 A Python package for calculating electric fields, electrostatic potentials (ESP), and electrostatic interactions from quantum mechanical calculations.
 
+For more details on the theory behind this pacakge, best practices for using it in your reserach, please see our open source paper:
+
+Melissa T. Manetsch, David W. Kastner, Yuriy Román-Leshkov, Heather J. Kulik; pyEF: A Python Framework for QM and QM/MM Atom-Wise Electric Field Analysis. J. Chem. Theory Comput. 26 May 2026; 22 (10): 4982–4994. https://doi.org/10.1021/acs.jctc.6c00065
+
+(we also request that you cite the above paper if you find this package helpful in your research!)
+
 Note: This package is under active development as of 2026, if you encounter any issues during use or have any features you would like to see incorporated, please do not hesitate to raise an issue or reach out to the developers at manets12@mit.edu. 
 
 ## Table of Contents
