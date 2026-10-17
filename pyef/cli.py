@@ -504,7 +504,8 @@ def run(config):
                     'profile_conditions': 'conditions', 'profile_origin': 'origin',
                     'profile_mask_radius': 'mask_radius', 'profile_mask_atoms': 'mask_atoms',
                     'profile_hull_atoms': 'hull_atoms', 'profile_r_min': 'r_min',
-                    'profile_cut': 'cut', 'profile_offset': 'offset'}
+                    'profile_cut': 'cut', 'profile_offset': 'offset',
+                    'profile_esp_range': 'esp_range'}
     profile_options = {kw: config_data[key] for key, kw in profile_keys.items()
                        if config_data.get(key) is not None}
 

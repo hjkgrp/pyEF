@@ -2937,12 +2937,13 @@ Please verify the file exists or set the path to None for jobs without point cha
         print(f"Saved ESP results to: {output_filename}")
         return df
 
-    def getESPProfile(self, charge_type, plane_points='auto', multiwfn_path=None,
+    def getESPProfile(self, charge_types='Hirshfeld_I', plane_points='auto', multiwfn_path=None,
                       profile_filename='esp_profile', conditions=None, origin=None,
-                      extent='auto', spacing=0.1, r_min=0.5, mask_radius=1.6,
+                      extent='auto', spacing=0.1, r_min=0.5, mask_radius=None,
                       mask_atoms=None, hull_atoms=None, mask_frac=0.3, dielectric=1,
                       dielectric_scale=1, includePtChgs=None, ptchg_paths=None,
-                      name=None, plot=True, cut='vertical', offset=0.0, **profile_kw):
+                      name=None, plot=True, formats=('svg', 'png'), esp_range='cavity',
+                      plot_kw=None, cut='vertical', offset=0.0, **profile_kw):
         """Frame-averaged ESP map on a plane through a cage (or any three atoms).
 
         Every job is one frame.  Missing ``Charges<charge_type>.txt`` files are
@@ -2951,8 +2952,10 @@ Please verify the file exists or set the path to None for jobs without point cha
 
         Parameters
         ----------
-        charge_type : str
-            Monopole charge scheme, e.g. 'CM5' or 'Hirshfeld'. A list uses its first entry.
+        charge_types : str or list of str
+            Monopole charge scheme(s), e.g. 'Hirshfeld_I' or ['CM5', 'Hirshfeld'].
+            One map per scheme; with more than one, each output stem gets a
+            ``_<scheme>`` suffix.
         plane_points : sequence of 3 index specs, or 'auto'
             P1, P2, P3 as 0-indexed atom indices or groups (``1``, ``'2-34'``,
             ``[2, 3, 4]``); a group stands for its centroid. Axis P1 -> P2,
@@ -2969,7 +2972,8 @@ Please verify the file exists or set the path to None for jobs without point cha
         conditions : dict, list or None
             Named source sets, e.g. ``{'CageOnly': 'cage', 'Cage_Solv': 'cage,mm'}``
             (tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-). Default:
-            Cage, Cage_Env, All when a cage is detected.
+            Cage (and Cage_Env with point charges) when a cage is detected;
+            the guest is left out -- add e.g. ``'All': 'all'`` to include it.
         origin : 'centroid', 'midpoint', atom index, lab xyz, or None (automatic)
         extent, spacing : float, pair, or 'auto' (extent)
             Half-extent (z_half, x_half) and grid spacing in Angstrom; 'auto'
@@ -2977,7 +2981,8 @@ Please verify the file exists or set the path to None for jobs without point cha
         r_min : float
             Source-probe pairs closer than this (Angstrom) are dropped.
         mask_radius, mask_atoms, hull_atoms, mask_frac
-            See :func:`pyef.esp_profile.compute_esp_profile`.
+            Blank cells near atoms / outside a hull; all off by default. See
+            :func:`pyef.esp_profile.compute_esp_profile`.
         dielectric : float
             Uniform dielectric; the ESP is divided by it.
         dielectric_scale : float
@@ -2988,20 +2993,50 @@ Please verify the file exists or set the path to None for jobs without point cha
             System name inside the npz (default: basename of ``profile_filename``).
         plot : bool
             Also draw the map.
+        formats : str or sequence of str
+            Image format(s) for the plot, e.g. 'png' or ('svg', 'png') (default).
+        esp_range : (vmin, vmax), 'cavity' or None
+            Colour scale. 'cavity' (default): limits from the cage cavity
+            alone, so the metals and walls saturate instead of washing it out.
+            (vmin, vmax): fixed limits in V; values outside saturate.
+            None: automatic (percentile-clipped over the whole map).
+        plot_kw : dict or None
+            Other options for :func:`pyef.esp_profile.plot_esp_profile`, e.g.
+            ``{'conditions': ['All'], 'level_step': 0.5}``.
 
         Returns
         -------
         dict
-            The profile result (see :func:`pyef.esp_profile.compute_esp_profile`).
+            The profile result (see :func:`pyef.esp_profile.compute_esp_profile`);
+            with several charge schemes, a dict of results keyed by scheme.
+
+        Examples
+        --------
+        >>> es = Electrostatics(molden_paths, xyz_paths)
+        >>> res = es.getESPProfile(charge_types=['Hirshfeld_I'], profile_filename='esp_profile',
+        ...                        multiwfn_path=multiwfn_path, plane_points=(1, 0, '2-41'))
         """
         from . import esp_profile
 
         if self.pdb_only:
             raise ValueError("getESPProfile reads Charges<type>.txt files and does not support pdb_only mode")
-        if isinstance(charge_type, list):
-            charge_type = charge_type[0]
+        if 'charge_type' in profile_kw:      # old keyword
+            charge_types = profile_kw.pop('charge_type')
+        if isinstance(charge_types, str):
+            charge_types = [charge_types]
+        if isinstance(formats, str):
+            formats = (formats,)
         if multiwfn_path is None or multiwfn_path == 'None':
             multiwfn_path = None
+        if len(charge_types) > 1:
+            return {ct: self.getESPProfile(
+                        ct, plane_points, multiwfn_path, f"{profile_filename}_{ct}",
+                        conditions, origin, extent, spacing, r_min, mask_radius,
+                        mask_atoms, hull_atoms, mask_frac, dielectric, dielectric_scale,
+                        includePtChgs, ptchg_paths, name and f"{name}_{ct}", plot,
+                        formats, esp_range, plot_kw, cut, offset, **profile_kw)
+                    for ct in charge_types}
+        charge_type = charge_types[0]
 
         self.config['dielectric'] = dielectric
         self.config['dielectric_scale'] = dielectric_scale
@@ -3053,8 +3088,9 @@ Please verify the file exists or set the path to None for jobs without point cha
         esp_profile.save_esp_profile(f"{profile_filename}.npz", result, name=name)
         print(f"Saved ESP profile ({result['n_frames']} frames) to: {profile_filename}.npz")
         if plot:
-            esp_profile.plot_esp_profile(result, out=profile_filename)
-            print(f"Saved ESP profile plot to: {profile_filename}.svg/.png")
+            esp_profile.plot_esp_profile(result, out=profile_filename, exts=formats,
+                                         esp_range=esp_range, **(plot_kw or {}))
+            print(f"Saved ESP profile plot to: {profile_filename}.{'/.'.join(formats)}")
         return result
 
     def getEfield(self, charge_types='Hirshfeld_I', Efielddata_filename='ef', multiwfn_path=None,

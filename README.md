@@ -302,7 +302,7 @@ pyef espprofile -c esp.yaml               # or: python -m pyef.esp_profile -c es
 charges: frames/*/ChargesCM5.txt    # one file, a list, or a glob; 1 file = single frame, >1 = averaged
 pointcharges: pointcharges.txt      # optional QM/MM charges, looked up next to each charge file
 cut: vertical                       # or horizontal
-hull_atoms: cage                    # optional: map only inside the cage
+esp_range: cavity                   # colour limits from the cage cavity (default); or [vmin, vmax] in V
 ```
 The first frame's geometry is used to find:
 - **the metals:** the two d/f-block atoms;
@@ -315,8 +315,9 @@ The run prints what it found, so you can check it. From this it sets:
 - **`cut: vertical`:** the plane containing the M–M axis, with the horizontal axis toward ligand 1.
 - **`cut: horizontal`:** the plane perpendicular to the M–M axis through its midpoint, i.e. the equatorial slice. `offset: 2.0` slides either plane 2 Å along its normal.
 - **`extent: auto`:** a grid that holds the whole cage plus 2 Å (`extent_pad`).
-- **Default conditions:** `Cage`, `Cage_Env` (+ all point charges) and `All` (+ guest).
-- **Default mask atoms:** the cage only, so a guest in the cavity does not blank it.
+- **Default conditions:** `Cage` and `Cage_Env` (+ all point charges). The guest is not a source and is not drawn; add `All: all` to include it.
+- **No masking by default:** the colour limits come from the cage cavity (`esp_range: cavity`), so the metals, the walls and the nuclei saturate instead of stretching the scale. Charges closer than `r_min` (0.5 Å) to a grid point count as `r_min` away, so each nucleus saturates rather than leaving a hole.
+- **Plot:** the structure within 1.5 Å of the plane is drawn as white sticks, metals as white circles.
 
 **ESP:** `ESP (V) = 14.3996 / dielectric * Σ q/r`. Pairs closer than `r_min`
 (0.5 Å) are skipped.
@@ -327,7 +328,7 @@ The run prints what it found, so you can check it. From this it sets:
 - **`extent`, `spacing`:** a number, or `[z, x]`.
 - **`conditions`**, written as tokens: `cage`, `guest`, `metals`, `qm`, `mm`, `all`, `qm:a-b`, `mm:a-b`, `mm:a-` (inclusive, 0-based). Listing the same charges twice in one condition is an error. Example: `Cage_Anion: cage,mm:0-275`, when the first 276 MM charges are the counterions.
 - **Masks:**
-  - `mask_radius`: 1.6 Å by default, or `vdw` for Bondi radii × `vdw_scale`, or per group, e.g. `{metals: 2.0, '2-133': 1.6}`.
+  - Off by default. `mask_radius`: e.g. 1.6 Å around the mask atoms (default: the cage, so a guest does not blank the cavity), or `vdw` for Bondi radii × `vdw_scale`, or per group, e.g. `{metals: 2.0, '2-133': 1.6}`.
   - `mask_atoms`, `hull_atoms`, `mask_frac`: a cell is blanked when it's flagged in at least `mask_frac` of the frames.
   - Masks are stored next to the map and never applied to the data.
 - **No charges yet:** use `molden: frames/*/*.molden`, `charge_type` and `multiwfn_path` in place of `charges:`. Multiwfn then generates any missing `Charges<type>.txt`.
@@ -351,14 +352,16 @@ From an `Electrostatics` object, the charges are generated if they are missing:
 ```python
 es = Electrostatics(molden_paths, xyz_paths)
 es.includePtChgs('pointcharges.txt')                                # optional, QM/MM
-res = es.getESPProfile('CM5', multiwfn_path=multiwfn_path, cut='vertical')
+res = es.getESPProfile(charge_types=['Hirshfeld_I'], profile_filename='esp_profile',
+                       multiwfn_path=multiwfn_path, plane_points=(1, 0, '2-41'),
+                       formats=('svg', 'png'))                # esp_profile.svg/.png/.npz
 ```
 In a `pyef -c config.yaml` jobs file, use `espprofile, job.molden, job.xyz` for
 the automatic plane, or add `(1, 0, 2-34)` to give it yourself. Jobs that share
 a plane are averaged. Set the options with `profile_cut`, `profile_offset`,
 `profile_extent`, `profile_spacing`, `profile_conditions`, `profile_origin`,
-`profile_mask_radius`, `profile_mask_atoms`, `profile_hull_atoms` and
-`profile_r_min`.
+`profile_mask_radius`, `profile_mask_atoms`, `profile_hull_atoms`,
+`profile_r_min` and `profile_esp_range`.
 
 **Output:** `<output>.npz` holds:
 - `<name>_mean_<cond>` and `<name>_std_<cond>`: V, unmasked.

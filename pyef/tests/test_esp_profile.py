@@ -164,7 +164,7 @@ def test_conditions_are_sums_of_their_sources(tmp_path, rng):
     f, _ = ep.plane_frame(xyz, (1, 0, '2-5'), 'midpoint')
     probes = f.to_lab(ep.plane_grid(4, 3, 17, 13)[2])
     def ref(sx, sq):
-        return ep.esp_at(probes, sx, sq, k=K / 4.0).reshape(17, 13)
+        return ep.esp_at(probes, sx, sq, k=K / 4.0, core='clamp').reshape(17, 13)
     np.testing.assert_allclose(res['mean_cage'], ref(xyz[:10], q[:10]), rtol=1e-10)
     np.testing.assert_allclose(
         res['mean_cage_anion'],
@@ -433,7 +433,7 @@ def test_auto_plane_vertical_and_horizontal(tmp_path):
     cf = write_charges(tmp_path / 'c.txt', syms, xyz, np.linspace(-1, 1, len(syms)))
     v = ep.compute_esp_profile([cf], spacing=0.5, mask_radius=None)
     assert list(v['plane_spec']) == ['1', '0', '2-6']          # Pd1 -> Pd0, ligand 1
-    assert v['conditions'] == ['Cage', 'All']                    # guest present, no MM
+    assert v['conditions'] == ['Cage']                           # guest present: left out by default
     np.testing.assert_allclose(v['plane_points_local'],
                                [[0, 0, -3], [0, 0, 3], [2, 0, 0]], atol=1e-12)
     h = ep.compute_esp_profile([cf], cut='horizontal', spacing=0.5, mask_radius=None)

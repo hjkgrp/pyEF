@@ -27,7 +27,8 @@ cut: vertical                           # vertical: plane through P1, P2, P3 (co
                                         #   or an atom index, or [x, y, z]
 
 # --- what to sum (optional) ---------------------------------------------------------
-# Default with a detected cage: Cage = cage, Cage_Env = cage + mm, All = everything.
+# Default with a detected cage: Cage = cage, Cage_Env = cage + mm.  The guest is left
+# out of the sources (and the drawn structure); add e.g. All: all to include it.
 # Tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-b, mm:a-  (ranges inclusive, 0-based)
 # conditions:
 #   Cage: cage
@@ -43,14 +44,14 @@ dielectric: 1
 dielectric_scale: 1                     # MM charges scaled by 1/sqrt(dielectric_scale), as in pyEF
 r_min: 0.5                              # drop source-probe pairs closer than this (A)
 
-# --- masks (stored next to the map, blank in the plot) ---------------------------------
-mask_radius: 1.6                        # A around the cage atoms; or vdw (each atom's van der Waals
-                                        #   radius x vdw_scale); or per group {'metals': 2.0, '2-133': 1.6}
+# --- masks (optional; off by default -- esp_range clips the spikes at the nuclei instead) ---
+# mask_radius: 1.6                      # blank cells within this distance (A) of the cage atoms; or vdw
+                                        #   (each atom's van der Waals radius x vdw_scale); or per group
+                                        #   {'metals': 2.0, '2-133': 1.6}
 # vdw_scale: 1.0
 # vdw_radii: {Fe: 2.0}                  # add/override radii for elements not in the table
 # mask_atoms: cage                      # default: the detected cage (a guest does not blank the cavity)
-hull_atoms: cage                        # blank cells outside the cage's convex hull; remove to map
-                                        #   outside the cage too
+# hull_atoms: cage                      # blank cells outside the cage's convex hull
 mask_frac: 0.3                          # blank a cell flagged in >= this fraction of frames
 
 # --- output -----------------------------------------------------------------------------
@@ -60,5 +61,7 @@ plot: true
 # point_labels: [M2, M1, L1]
 # ylabel: distance along M-M axis (Å)
 # xlabel: x⊥ (Å)
-# fixed_scale: [-2, 9, viridis]         # pin the colour scale: vmin, vmax, colormap
+esp_range: cavity                       # colour limits from the cage cavity only, so the metals and
+                                        #   walls saturate; or [vmin, vmax] in V; null: whole-map automatic
+# fixed_scale: [-2, 9, viridis]         # or pin vmin, vmax and the colormap yourself
 # atom_slab: 1.0                        # also draw atoms within this distance (A) of the plane

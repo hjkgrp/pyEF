@@ -224,12 +224,17 @@ def _chunk_for(n_src):
     return max(32, int(CHUNK_ELEMS // max(1, n_src)))
 
 
-def esp_at(probes, src_xyz, src_q, r_min=0.5, k=COULOMB_EV_ANGSTROM):
+def esp_at(probes, src_xyz, src_q, r_min=0.5, k=COULOMB_EV_ANGSTROM, core='drop'):
     """ESP (V) at ``probes`` (N, 3) from point charges, chunked over probes.
 
-    Source-probe pairs closer than ``r_min`` (A, > 0) are dropped; ``k`` is
-    the Coulomb constant in V*A/e (divide by a dielectric to screen).
+    Source-probe pairs closer than ``r_min`` (A, > 0) are dropped
+    (``core='drop'``), or counted as if ``r_min`` apart (``core='clamp'``,
+    which keeps the map continuous: a nucleus saturates instead of leaving a
+    hole).  ``k`` is the Coulomb constant in V*A/e (divide by a dielectric to
+    screen).
     """
+    if core not in ('drop', 'clamp'):
+        raise ValueError(f"core must be 'drop' or 'clamp', got {core!r}")
     probes = np.asarray(probes, dtype=float).reshape(-1, 3)
     src_xyz = np.asarray(src_xyz, dtype=float).reshape(-1, 3)
     src_q = np.asarray(src_q, dtype=float).ravel()
@@ -255,8 +260,11 @@ def esp_at(probes, src_xyz, src_q, r_min=0.5, k=COULOMB_EV_ANGSTROM):
         # A probe exactly on a source gives 1/r = inf, and inf * False = NaN
         # would poison the whole sum.  Clamp to a finite value that still
         # fails the r_min test so the pair is dropped as intended.
-        np.minimum(r2, 2.0 / r_min, out=r2)
-        np.multiply(r2, r2 <= 1.0 / r_min, out=r2)
+        if core == 'clamp':
+            np.minimum(r2, 1.0 / r_min, out=r2)
+        else:
+            np.minimum(r2, 2.0 / r_min, out=r2)
+            np.multiply(r2, r2 <= 1.0 / r_min, out=r2)
         out[i:i + chunk] = k * (r2 @ src_q)
     return out
 
@@ -345,6 +353,26 @@ def _element(sym):
     return m.group(0).capitalize() if m else str(sym)
 
 
+def bond_pairs(symbols, xyz):
+    """Bonded atom pairs ``(i, j, metal)`` by covalent radii: closer than
+    ``BOND_TOL`` (``METAL_BOND_TOL`` when either atom is a metal) times the sum
+    of the radii.  ``metal`` flags the bonds that involve a metal."""
+    from scipy.spatial import cKDTree
+    xyz = np.asarray(xyz, dtype=float)
+    els = [_element(s) for s in symbols]
+    rad = np.array([COVALENT_RADII.get(e, 1.5) for e in els])
+    is_metal = np.array([e in CAGE_METALS for e in els])
+    pairs = cKDTree(xyz).query_pairs(METAL_BOND_TOL * 2 * rad.max(), output_type='ndarray')
+    if not len(pairs):
+        empty = np.zeros(0, dtype=int)
+        return empty, empty, np.zeros(0, dtype=bool)
+    i, j = pairs[:, 0], pairs[:, 1]
+    d = np.linalg.norm(xyz[i] - xyz[j], axis=1)
+    either = is_metal[i] | is_metal[j]
+    bonded = d < np.where(either, METAL_BOND_TOL, BOND_TOL) * (rad[i] + rad[j])
+    return i[bonded], j[bonded], either[bonded]
+
+
 def detect_system(symbols, xyz):
     """Find the metals, ligands, cage and guest in one QM geometry.
 
@@ -358,21 +386,10 @@ def detect_system(symbols, xyz):
     """
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
-    from scipy.spatial import cKDTree
-    xyz = np.asarray(xyz, dtype=float)
     els = [_element(s) for s in symbols]
     n = len(els)
-    rad = np.array([COVALENT_RADII.get(e, 1.5) for e in els])
     is_metal = np.array([e in CAGE_METALS for e in els])
-    pairs = cKDTree(xyz).query_pairs(METAL_BOND_TOL * 2 * rad.max(), output_type='ndarray')
-    if len(pairs):
-        i, j = pairs[:, 0], pairs[:, 1]
-        d = np.linalg.norm(xyz[i] - xyz[j], axis=1)
-        either = is_metal[i] | is_metal[j]
-        bonded = d < np.where(either, METAL_BOND_TOL, BOND_TOL) * (rad[i] + rad[j])
-        i, j, either = i[bonded], j[bonded], either[bonded]
-    else:
-        i = j = either = np.zeros(0, dtype=int)
+    i, j, either = bond_pairs(symbols, xyz)
     # fragments of the metal-free bond graph
     org = ~either
     g = coo_matrix((np.ones(org.sum()), (i[org], j[org])), shape=(n, n))
@@ -634,8 +651,8 @@ def _normalize_conditions(conditions, have_mm):
 
 def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
                         conditions=None, origin=None, extent='auto',
-                        spacing=0.1, r_min=0.5, dielectric=1.0, mm_scale=1.0,
-                        mask_radius=1.6, mask_atoms=None, hull_atoms=None,
+                        spacing=0.1, r_min=0.5, core='clamp', dielectric=1.0, mm_scale=1.0,
+                        mask_radius=None, mask_atoms=None, hull_atoms=None,
                         mask_frac=0.3, vdw_scale=1.0, vdw_radii=None,
                         extent_pad=2.0, extent_atoms=None, cut='vertical',
                         offset=0.0, verbose=True):
@@ -656,9 +673,9 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
     conditions : dict, list or None
         ``{name: tokens}``, or a list of ``'name=tokens'`` / bare token
         strings.  Tokens: ``qm``, ``mm``, ``all``, ``qm:a-b``, ``mm:a-``, and
-        the detected sets ``cage``, ``guest``, ``metals``.  Default: ``Cage``,
-        ``Cage_Env`` (with point charges) and ``All`` when a cage is
-        detected, else ``qm`` (and ``all``).
+        the detected sets ``cage``, ``guest``, ``metals``.  Default: ``Cage``
+        and ``Cage_Env`` (with point charges) when a cage is detected -- the
+        guest is not a source -- else ``qm`` (and ``all``).
     origin : 'centroid', 'midpoint', atom index, lab xyz, or None
         None: midpoint for an auto plane or a horizontal cut, else centroid.
     cut : 'vertical' or 'horizontal'
@@ -673,14 +690,18 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
         cage for any cage size.
     spacing : float or (dz, dx), A.
     r_min : float
-        Pairs closer than this (A) are dropped.
+        Source-probe distances below this (A) are treated as ``r_min``
+        (``core='clamp'``, default: the map stays continuous and a nucleus
+        saturates) or the pair is dropped (``core='drop'``, the older
+        behaviour, which leaves a pale hole of radius ``r_min`` at each atom).
     dielectric : float
         Uniform dielectric; the ESP is divided by it.
     mm_scale : float
         Factor applied to every MM charge (pyEF uses
         ``1/sqrt(dielectric_scale)``).
     mask_radius : float, dict, 'vdw' or None
-        Cells within this distance (A) of a ``mask_atoms`` atom are flagged.
+        Cells within this distance (A) of a ``mask_atoms`` atom are flagged
+        (default None: no mask; the plot's ``esp_range`` clips the nuclei instead).
         A dict ``{atom_spec: radius}`` gives each atom group its own radius,
         e.g. ``{'0-1': 2.0, '2-133': 1.6}`` (``mask_atoms`` is then ignored).
         ``'vdw'`` uses each atom's van der Waals radius times ``vdw_scale``
@@ -747,11 +768,9 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
                     for pp in plane_points]
 
     if conditions is None and system['cage']:
-        conditions = {'Cage': 'cage'}
+        conditions = {'Cage': 'cage'}           # the guest is left out by default
         if have_mm:
             conditions['Cage_Env'] = 'cage,mm'
-        if have_mm or system['guest']:
-            conditions['All'] = 'all'
     conditions = _normalize_conditions(conditions, have_mm)
     condition_tokens = {c: t for c, t in conditions.items()}
     conditions = {c: _expand_named(t, named) for c, t in conditions.items()}
@@ -764,6 +783,12 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
     if mask_atoms is None and not isinstance(mask_radius, dict) and system['cage']:
         mask_atoms = 'cage'
     hull_idx = None if hull_atoms is None else _atom_indices(hull_atoms, n0, named)
+    # the cavity: inside the hull of the cage and clear of its atoms (2.0 A
+    # around a metal, 1.6 A around the rest).  Never masked; it only feeds the
+    # plot's dashed outline and esp_range='cavity'.
+    cav_hull = hull_idx if hull_idx is not None else (system['cage'] or None)
+    cav_metals = [i for i in system['metals'] if cav_hull and i in cav_hull]
+    cav_rest = [i for i in (cav_hull or []) if i not in cav_metals]
     if isinstance(extent, str):
         if extent.strip().lower() != 'auto':
             raise ValueError(f"extent must be a number, a pair or 'auto', got {extent!r}")
@@ -779,6 +804,7 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
 
     maps = {c: [] for c in conditions}
     excluded = np.zeros(len(local))
+    outside_cavity = np.zeros(len(local))
     dists, ref_local = [], []
     symbols, n_qm = None, None
     for cf, pf in zip(charge_files, ptchg_files):
@@ -810,8 +836,19 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
         if hull_idx is not None:
             excl |= hull_mask(local, frame.to_local(qm_xyz[hull_idx]))
         excluded += excl
+        if cav_hull:
+            try:
+                out = hull_mask(local, frame.to_local(qm_xyz[cav_hull]))
+            except Exception:                 # too few / coplanar atoms: no cavity
+                cav_hull = None
+            else:
+                for idx, r in ((cav_metals, 2.0), (cav_rest, 1.6)):
+                    if idx:
+                        out |= min_dist(probes, qm_xyz[idx]) < r
+                outside_cavity += out
 
-        seg_v = {g: esp_at(probes, src[s][0][a:b], src[s][1][a:b], r_min=r_min, k=k)
+        seg_v = {g: esp_at(probes, src[s][0][a:b], src[s][1][a:b], r_min=r_min, k=k,
+                           core=core)
                  for g, (s, a, b) in segments.items()}
         for c, gs in seg_conditions.items():
             maps[c].append(sum((seg_v[g] for g in gs), np.zeros(len(local))).reshape(nz, nx))
@@ -821,10 +858,16 @@ def compute_esp_profile(charge_files, plane_points='auto', ptchg_files=None,
 
     n_frames = len(charge_files)
     ref = np.mean(ref_local, axis=0)
+    # the frame closest to the mean: a real geometry to draw (the mean itself
+    # is not one -- a guest that tumbles averages to a collapsed blob)
+    medoid = int(np.argmin([np.sum((r - ref) ** 2) for r in ref_local]))
     res = {'n_frames': n_frames, 'z_vals': z_vals, 'x_vals': x_vals,
            'mask': (excluded / n_frames >= mask_frac).reshape(nz, nx),
+           'cavity': (outside_cavity / n_frames < mask_frac).reshape(nz, nx)
+           if cav_hull else np.zeros((nz, nx), dtype=bool),
            'mean_dist': float(np.mean(dists)), 'std_dist': float(np.std(dists)),
            'plane_points_local': ref[:3], 'atoms_local': ref[3:],
+           'structure_local': ref_local[medoid][3:], 'structure_frame': medoid,
            'symbols': np.array(symbols),
            'frames': np.array([os.path.abspath(f) for f in charge_files]),
            'condition_tokens': np.array(
@@ -976,6 +1019,48 @@ def _scale_for(maps, pct=99.5):
     return 0.0, hi, 'YlOrRd'
 
 
+def _draw_structure(ax, result, slab=1.5, color='white', lw=1.5, skip=()):
+    """Heavy-atom bonds within ``slab`` A of the plane as sticks, with a dark
+    edge so they read on both the deep-red walls and a pale cavity; metals in
+    the slab as circles.  Coordinates are local: x across, y out of plane, z up."""
+    import matplotlib.patheffects as pe
+    xyz = np.asarray(result.get('structure_local', result.get('atoms_local')), dtype=float)
+    syms = [_element(s) for s in result['symbols']]
+    heavy = np.array([e != 'H' for e in syms])
+    near = np.abs(xyz[:, 1]) <= slab
+    near[np.asarray(skip, dtype=int)] = False
+    edge = [pe.withStroke(linewidth=lw + 1.2, foreground='0.15', alpha=0.85)]
+    i, j, _ = bond_pairs(syms, xyz)
+    for a, b in zip(i, j):
+        if heavy[a] and heavy[b] and near[a] and near[b]:
+            ax.plot(xyz[[a, b], 0], xyz[[a, b], 2], '-', lw=lw, color=color,
+                    solid_capstyle='round', zorder=8, path_effects=edge)
+    for k, e in enumerate(syms):
+        if e in CAGE_METALS and near[k]:
+            ax.plot(xyz[k, 0], xyz[k, 2], 'o', color=color, ms=9, zorder=10,
+                    markeredgecolor='black', markeredgewidth=1.5)
+
+
+def _cavity_scale(result, maps, cavity, clear=1.6, pct=99.0):
+    """``(vmin, vmax, cmap)`` from the cavity cells at least ``clear`` A from
+    every atom (a guest's nuclei would otherwise set the limits).  Not anchored
+    at zero: a cavity that is all +5 to +10 V gets that range, sequential."""
+    sel = cavity.copy()
+    atoms = result.get('atoms_local')
+    if atoms is not None and len(atoms):
+        ZZ, XX = np.meshgrid(result['z_vals'], result['x_vals'], indexing='ij')
+        cells = np.column_stack([XX.ravel(), np.zeros(XX.size), ZZ.ravel()])
+        far = (min_dist(cells, np.asarray(atoms, dtype=float)) >= clear).reshape(XX.shape)
+        if (sel & far).any():
+            sel &= far
+    vals = np.concatenate([np.asarray(m)[sel & np.isfinite(m)] for m in maps])
+    lo, hi = np.percentile(vals, 100 - pct), np.percentile(vals, pct)
+    if lo < 0.0 < hi:
+        v = max(-lo, hi)
+        return -v, v, 'RdBu_r'
+    return lo, hi, 'Blues_r' if hi <= 0.0 else 'YlOrRd'
+
+
 def _contour_levels(vmin, vmax, step):
     """Iso-potential levels on an absolute grid of ``step`` volts, so one line
     means the same potential difference in every panel; 11 proportional
@@ -987,7 +1072,10 @@ def _contour_levels(vmin, vmax, step):
     return np.linspace(vmin, vmax, 11)
 
 
-def plot_esp_profile(result, conditions=None, out=None, fixed=None,
+def plot_esp_profile(result, conditions=None, out=None, fixed=None, esp_range='cavity',
+                     show_points=False, cavity_outline=False, structure=True,
+                     structure_slab=1.5, structure_color='white', structure_guest=False,
+                     annotate_mean=False,
                      point_labels=('P1', 'P2', 'P3'), atom_slab=None,
                      ylabel=None, xlabel=None, level_step=1.0,
                      panel_size=3.5, exts=('svg', 'png'), dpi=300):
@@ -999,7 +1087,29 @@ def plot_esp_profile(result, conditions=None, out=None, fixed=None,
     triangle, each only if it lies within 0.5 A of the plane (in a horizontal
     cut the P1-P2 axis is the map centre); ``atom_slab`` (A) also draws the QM atoms
     within that distance of the plane.  ``fixed=(vmin, vmax, cmap)`` pins the
-    colour scale.  With ``out`` set, saves ``out.<ext>`` and closes the
+    colour scale.  ``esp_range=(vmin, vmax)`` does the
+    same with the colour map chosen for you (diverging if the range spans zero,
+    else sequential); values outside it saturate.  ``esp_range='cavity'`` (default): the
+    limits come from the cavity alone (1-99th percentile of the cells at least
+    1.6 A from every atom), so the metals, the cage walls and the guest's
+    nuclei saturate instead of washing the cavity out.  The range is not
+    anchored at zero.  Panels with very different ranges (e.g. a guest-only
+    condition) are better plotted separately: the scale is shared.
+    ``esp_range=None``, or 'cavity' when no cage was detected: automatic,
+    percentile-clipped over the whole map.
+
+    The cavity (inside the cage's convex hull, clear of its atoms) is drawn as
+    a dashed outline (``cavity_outline``).  ``annotate_mean`` writes the mean
+    ESP in each panel's corner: over the cavity when there is one, else over
+    the unmasked map.
+    ``show_points=True`` marks P1/P2/P3.
+
+    ``structure=True`` draws the molecule over the map as white sticks with a
+    dark edge: every bond between heavy atoms within ``structure_slab`` A of
+    the plane, and metals in that slab as white circles.  With several frames
+    the geometry is the frame closest to the average (``structure_frame``),
+    since the average itself is not a molecule.  The guest is not drawn
+    unless ``structure_guest=True``.  With ``out`` set, saves ``out.<ext>`` and closes the
     figure.  Returns ``(fig, axes, (vmin, vmax, cmap))``.
     """
     import matplotlib.pyplot as plt
@@ -1007,6 +1117,15 @@ def plot_esp_profile(result, conditions=None, out=None, fixed=None,
     conds = list(conditions) if conditions else list(result['conditions'])
     maps = [masked(result, c) for c in conds]
     z_vals, x_vals = np.asarray(result['z_vals']), np.asarray(result['x_vals'])
+    cavity = np.asarray(result.get('cavity', np.zeros(np.shape(maps[0]), dtype=bool)), dtype=bool)
+    if isinstance(esp_range, str):
+        if esp_range != 'cavity':
+            raise ValueError(f"esp_range must be (vmin, vmax), 'cavity' or None, got {esp_range!r}")
+        if cavity.any():
+            fixed = fixed or _cavity_scale(result, maps, cavity)
+    elif fixed is None and esp_range is not None:
+        lo, hi = sorted(float(v) for v in esp_range)
+        fixed = (lo, hi, 'RdBu_r' if lo < 0.0 < hi else ('Blues_r' if hi <= 0.0 else 'YlOrRd'))
     vmin, vmax, cmap = tuple(fixed) if fixed is not None else _scale_for(maps)
     pts = np.asarray(result['plane_points_local'])
     horizontal = str(result.get('cut', 'vertical')) == 'horizontal'
@@ -1034,25 +1153,34 @@ def plot_esp_profile(result, conditions=None, out=None, fixed=None,
             ax.contour(x_vals, z_vals, np.where(np.isfinite(m), m, 0.0),
                        levels=_contour_levels(vmin, vmax, level_step),
                        colors='k', linewidths=0.3, alpha=0.35)
+            if cavity_outline and cavity.any():
+                ax.contour(x_vals, z_vals, cavity.astype(float), levels=[0.5],
+                           colors='k', linewidths=1.1, linestyles='--', alpha=0.75,
+                           zorder=4)
             if np.isfinite(m).any():
                 if np.nanmin(m) < 0.0 < np.nanmax(m):
                     ax.contour(x_vals, z_vals, np.where(np.isfinite(m), m, 1e3),
                                levels=[0.0], colors='white', linewidths=1.6, zorder=4)
-                ax.annotate(f'{np.nanmean(m):+.2f} V', (0.97, 0.03),
-                            xycoords='axes fraction', ha='right', va='bottom',
-                            fontsize=9, fontweight='bold', color='white',
-                            bbox=dict(boxstyle='round,pad=0.25', fc='black',
-                                      ec='none', alpha=0.55))
+                shown = m[cavity] if cavity.any() else m
+                if annotate_mean:
+                    ax.annotate(f'{np.nanmean(shown):+.2f} V', (0.97, 0.03),
+                                xycoords='axes fraction', ha='right', va='bottom',
+                                fontsize=9, fontweight='bold', color='white',
+                                bbox=dict(boxstyle='round,pad=0.25', fc='black',
+                                          ec='none', alpha=0.55))
             if near is not None:
                 ax.plot(near[:, 0], near[:, 2], '.', color='0.2', ms=4, alpha=0.6,
                         zorder=5)
-            for i, p in enumerate(pts):
+            for i, p in enumerate(pts if show_points else []):
                 if abs(p[1]) > 0.5:
                     continue
                 ax.plot(p[0], p[2], 'o' if i < 2 else '^', ms=9, zorder=6,
                         color='gold' if i < 2 else 'limegreen',
                         markeredgecolor='black', markeredgewidth=1.5,
                         label=point_labels[i])
+            if structure:
+                _draw_structure(ax, result, structure_slab, structure_color,
+                                skip=() if structure_guest else result.get('guest_atoms', ()))
             ax.axvline(0, color='0.55', lw=0.6, ls='--', alpha=0.6)
             ax.axhline(0, color='0.55', lw=0.6, ls='--', alpha=0.6)
             ax.set_xlim(x_vals[0], x_vals[-1])
@@ -1137,7 +1265,8 @@ cut: vertical                           # vertical: plane through P1, P2, P3 (co
                                         #   or an atom index, or [x, y, z]
 
 # --- what to sum (optional) ---------------------------------------------------------
-# Default with a detected cage: Cage = cage, Cage_Env = cage + mm, All = everything.
+# Default with a detected cage: Cage = cage, Cage_Env = cage + mm.  The guest is left
+# out of the sources (and the drawn structure); add e.g. All: all to include it.
 # Tokens: cage, guest, metals, qm, mm, all, qm:a-b, mm:a-b, mm:a-  (ranges inclusive, 0-based)
 # conditions:
 #   Cage: cage
@@ -1153,14 +1282,14 @@ dielectric: 1
 dielectric_scale: 1                     # MM charges scaled by 1/sqrt(dielectric_scale), as in pyEF
 r_min: 0.5                              # drop source-probe pairs closer than this (A)
 
-# --- masks (stored next to the map, blank in the plot) ---------------------------------
-mask_radius: 1.6                        # A around the cage atoms; or vdw (each atom's van der Waals
-                                        #   radius x vdw_scale); or per group {'metals': 2.0, '2-133': 1.6}
+# --- masks (optional; off by default -- esp_range clips the spikes at the nuclei instead) ---
+# mask_radius: 1.6                      # blank cells within this distance (A) of the cage atoms; or vdw
+                                        #   (each atom's van der Waals radius x vdw_scale); or per group
+                                        #   {'metals': 2.0, '2-133': 1.6}
 # vdw_scale: 1.0
 # vdw_radii: {Fe: 2.0}                  # add/override radii for elements not in the table
 # mask_atoms: cage                      # default: the detected cage (a guest does not blank the cavity)
-hull_atoms: cage                        # blank cells outside the cage's convex hull; remove to map
-                                        #   outside the cage too
+# hull_atoms: cage                      # blank cells outside the cage's convex hull
 mask_frac: 0.3                          # blank a cell flagged in >= this fraction of frames
 
 # --- output -----------------------------------------------------------------------------
@@ -1170,7 +1299,9 @@ plot: true
 # point_labels: [M2, M1, L1]
 # ylabel: distance along M-M axis (Å)
 # xlabel: x⊥ (Å)
-# fixed_scale: [-2, 9, viridis]         # pin the colour scale: vmin, vmax, colormap
+esp_range: cavity                       # colour limits from the cage cavity only, so the metals and
+                                        #   walls saturate; or [vmin, vmax] in V; null: whole-map automatic
+# fixed_scale: [-2, 9, viridis]         # or pin vmin, vmax and the colormap yourself
 # atom_slab: 1.0                        # also draw atoms within this distance (A) of the plane
 """
 
@@ -1180,7 +1311,7 @@ CONFIG_KEYS = {
     'dielectric_scale', 'r_min', 'mask_radius', 'mask_atoms', 'hull_atoms',
     'mask_frac', 'output', 'name', 'plot', 'point_labels', 'ylabel', 'xlabel',
     'fixed_scale', 'atom_slab', 'vdw_scale', 'vdw_radii', 'extent_pad',
-    'extent_atoms', 'cut', 'offset'}
+    'extent_atoms', 'cut', 'offset', 'esp_range'}
 
 
 def _natural_key(path):
@@ -1286,7 +1417,7 @@ def run_config(path):
         spacing=cfg.get('spacing', 0.1), r_min=cfg.get('r_min', 0.5),
         dielectric=cfg.get('dielectric', 1.0),
         mm_scale=1.0 / np.sqrt(cfg.get('dielectric_scale', 1.0)),
-        mask_radius=cfg.get('mask_radius', 1.6) or None,
+        mask_radius=cfg.get('mask_radius') or None,
         mask_atoms=cfg.get('mask_atoms'), hull_atoms=cfg.get('hull_atoms'),
         mask_frac=cfg.get('mask_frac', 0.3), vdw_scale=cfg.get('vdw_scale', 1.0),
         vdw_radii=cfg.get('vdw_radii'), extent_pad=cfg.get('extent_pad', 2.0),
@@ -1306,6 +1437,8 @@ def run_config(path):
             kw['point_labels'] = tuple(cfg['point_labels'])
         if 'fixed_scale' in cfg:
             kw['fixed'] = tuple(cfg['fixed_scale'])
+        if 'esp_range' in cfg:
+            kw['esp_range'] = cfg['esp_range']
         plot_esp_profile(res, out=out, **kw)
         print(f'-> {out}.svg, {out}.png')
     return res
@@ -1351,8 +1484,8 @@ def build_parser():
                    help='factor on every MM charge (default 1)')
     p.add_argument('--r-min', type=float, default=0.5,
                    help='drop source-probe pairs closer than this, A (default 0.5)')
-    p.add_argument('--mask-radius', type=_mask_radius_arg, default=1.6,
-                   help="mask cells within this distance of mask atoms, A (0 disables), "
+    p.add_argument('--mask-radius', type=_mask_radius_arg, default=None,
+                   help="mask cells within this distance of mask atoms, A (default: no mask), "
                         "'vdw' for each atom's van der Waals radius, or per-group radii "
                         'ATOMS:R,..., e.g. 0-1:2.0,2-133:1.6')
     p.add_argument('--vdw-scale', type=float, default=1.0,
@@ -1365,6 +1498,9 @@ def build_parser():
     p.add_argument('--name', default='profile', help='system name in the npz')
     p.add_argument('--out', default='esp_profile',
                    help='output stem: writes STEM.npz and STEM.svg/.png')
+    p.add_argument('--esp-range', nargs='+', default=['cavity'],
+                   help="colour scale: 'cavity' (default, limits from the cage cavity), "
+                        "'auto', or VMIN VMAX in V; values outside saturate")
     p.add_argument('--no-plot', action='store_true')
     return p
 
@@ -1405,7 +1541,16 @@ def main(argv=None):
     if not a.no_plot:
         import matplotlib
         matplotlib.use('Agg')
-        plot_esp_profile(res, out=a.out)
+        rng = a.esp_range
+        if len(rng) == 2:
+            rng = [float(v) for v in rng]
+        elif rng == ['auto']:
+            rng = None
+        elif rng != ['cavity']:
+            parser.error("--esp-range takes 'cavity', 'auto' or VMIN VMAX")
+        else:
+            rng = 'cavity'
+        plot_esp_profile(res, out=a.out, esp_range=rng)
         print(f'plot -> {a.out}.svg, {a.out}.png')
     return res
 
